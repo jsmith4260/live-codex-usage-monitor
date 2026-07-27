@@ -50,6 +50,7 @@ Invoke-MonitorTest -Name 'Integration parsing' -Arguments @('-IntegrationSmokeTe
 Invoke-MonitorTest -Name 'Private task labels' -Arguments @('-TaskSmokeTest') -ExpectedPattern 'Tasks=1;.*gpt-test' -RejectedPattern 'Confidential acquisition'
 Invoke-MonitorTest -Name 'Date-range reload' -Arguments @('-DateRangeSmokeTest') -ExpectedPattern 'DateRange=2026-07-26 to 2026-07-26; Events=2'
 Invoke-MonitorTest -Name 'Combined status and quota windows' -Arguments @('-StatusSmokeTest') -ExpectedPattern 'QuotaPercent=95; Status=CRITICAL'
+Invoke-MonitorTest -Name 'Startup alert freshness' -Arguments @('-AlertSmokeTest') -ExpectedPattern 'StaleAlert=False; ActiveAlert=True'
 
 Write-Host 'QA passed.'
 exit 0

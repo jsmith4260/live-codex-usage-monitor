@@ -50,7 +50,8 @@ param(
     [switch]$IntegrationSmokeTest,
     [switch]$TaskSmokeTest,
     [switch]$DateRangeSmokeTest,
-    [switch]$StatusSmokeTest
+    [switch]$StatusSmokeTest,
+    [switch]$AlertSmokeTest
 )
 
 Set-StrictMode -Version Latest
@@ -1042,6 +1043,7 @@ function Get-GuidanceText {
 function Should-Alert {
     param([object]$UsageEvent, [object]$Minute)
     if ($null -eq $UsageEvent) { return $false }
+    if ($UsageEvent.At -lt (Get-Date).AddMinutes(-2)) { return $false }
     if ($UsageEvent.EventId -eq $script:lastAlertEventId) { return $false }
     if ($UsageEvent.NewInput -ge $WarnNewInputTokens) { return $true }
     if ($UsageEvent.FreshBurn -ge $WarnMinuteFreshTokens) { return $true }
@@ -1108,6 +1110,19 @@ if ($DateRangeSmokeTest) {
     $testDate = $ordered[0].At.Date
     Set-MonitorDateRange -FromDate $testDate -ToDate $testDate
     Write-Output ('DateRange={0}; Events={1}' -f (Format-DateRange), $script:events.Count)
+    exit 0
+}
+
+if ($AlertSmokeTest) {
+    $latest = @($script:events | Sort-Object At -Descending | Select-Object -First 1)
+    if ($latest.Count -eq 0) { throw 'Alert smoke test requires at least one token event.' }
+    $minute = Get-SumPack -Items @($latest)
+    $staleAlert = Should-Alert -UsageEvent $latest[0] -Minute $minute
+    $activeEvent = $latest[0].PSObject.Copy()
+    $activeEvent.At = Get-Date
+    $activeEvent.NewInput = $WarnNewInputTokens
+    $activeAlert = Should-Alert -UsageEvent $activeEvent -Minute $minute
+    Write-Output ('StaleAlert={0}; ActiveAlert={1}' -f $staleAlert, $activeAlert)
     exit 0
 }
 
