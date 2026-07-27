@@ -20,7 +20,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $files = Get-ChildItem -Filter '*.ps1'
+          $files = Get-ChildItem -Recurse -File | Where-Object { $_.Extension -in @('.ps1', '.psm1') }
           foreach ($file in $files) {
             $tokens = $null
             $errors = $null
@@ -34,3 +34,16 @@ jobs:
             }
           }
           & .\Test-Live-Codex-Usage.ps1
+
+      - name: Build release package
+        shell: powershell
+        run: .\Build-Release.ps1 -SkipTests
+
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-codex-usage-monitor
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+          if-no-files-found: error

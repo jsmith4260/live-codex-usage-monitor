@@ -5,8 +5,14 @@ sessions/
 !tests/fixtures/**/*.jsonl
 *.log
 *.csv
+!tests/fixtures/**/*.csv
 *.sqlite
 *.db
+
+# Deterministic, fictional QA data is intentionally versioned.
+!tests/
+!tests/fixtures/
+!tests/fixtures/**
 
 # Local review and build artifacts
 artifacts/

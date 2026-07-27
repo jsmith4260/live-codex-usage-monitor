@@ -1,0 +1,7 @@
+{
+  "timestamp": "timestamp",
+  "event_type": "event.type",
+  "surface": "event.surface",
+  "user_id": "actor.id",
+  "model": "event.model"
+}

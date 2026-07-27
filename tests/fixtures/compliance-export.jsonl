@@ -1,0 +1,5 @@
+{"timestamp":"2026-07-26T14:00:00Z","event":{"type":"conversation.created","surface":"web","model":"gpt-5"},"actor":{"id":"employee-secret-1"},"content":{"prompt":"Confidential merger plan must never be exported"}}
+{"timestamp":"2026-07-26T14:05:00Z","event":{"type":"conversation.created","surface":"excel","model":"gpt-5"},"actor":{"id":"employee-secret-2"},"content":{"prompt":"Sensitive workbook data must never be exported"}}
+{"timestamp":"2026-07-26T14:06:00Z","event":{"type":"conversation.created","surface":"excel","model":"gpt-5"},"actor":{"id":"employee-secret-2"},"content":{"response":"Sensitive response must never be exported"}}
+{"timestamp":"2026-07-26T14:07:00Z","event":{"type":"conversation.created","surface":"=FORMULA_TEST","model":"gpt-5"},"actor":{"id":"employee-secret-3"},"content":{"prompt":"Formula-injection fixture content must never be exported"}}
+not-valid-json

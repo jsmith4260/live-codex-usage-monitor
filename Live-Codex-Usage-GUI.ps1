@@ -1,9 +1,10 @@
 <#
 Live-Codex-Usage-GUI.ps1
 
-Native local Windows dashboard for Codex token events. It is read-only: it
-reads local Codex session JSONL files and does not write files, invoke Codex,
-call ChatGPT, or contact any network service. It does not display prompt text,
+Native local Windows dashboard for Codex token events. It reads local Codex
+session JSONL files and writes only when the user explicitly exports an
+aggregate report. It does not invoke Codex, call ChatGPT, or contact any network
+service. It does not display prompt text,
 responses, tool arguments, tool output, credentials, or working-directory paths.
 
 Run:
@@ -28,6 +29,9 @@ param(
     [int]$PollSeconds = 5,
     [ValidateRange(1, 87600)]
     [int]$HistoryHours = 24,
+    [string]$FromDate = '',
+    [string]$ToDate = '',
+    [bool]$IncludeArchivedSessions = $true,
     [ValidateSet('Follow latest', 'Pinned session', 'All sessions')]
     [string]$InitialView = 'All sessions',
     [switch]$StartMini,
@@ -51,7 +55,17 @@ param(
     [switch]$TaskSmokeTest,
     [switch]$DateRangeSmokeTest,
     [switch]$StatusSmokeTest,
-    [switch]$AlertSmokeTest
+    [switch]$AlertSmokeTest,
+    [switch]$ArchivedSmokeTest,
+    [switch]$PresetSmokeTest,
+    [switch]$RangeCacheSmokeTest,
+    [switch]$QuotaResetSmokeTest,
+    [switch]$ExportSmokeTest,
+    [string]$ExportPath = '',
+    [switch]$EnterpriseSmokeTest,
+    [string]$EnterpriseCsvPath = '',
+    [switch]$EnterpriseUiSmokeTest,
+    [string]$CaptureScreenshotPath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -59,9 +73,16 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $PSCommandPath
 if ([string]::IsNullOrWhiteSpace($scriptDir)) { $scriptDir = (Get-Location).Path }
-$sessionRoot = Join-Path $CodexHome 'sessions'
-if (-not (Test-Path -LiteralPath $sessionRoot -PathType Container)) {
-    throw "Codex session-log folder was not found: $sessionRoot"
+$sessionRoots = [System.Collections.Generic.List[string]]::new()
+foreach ($folderName in @('sessions', 'archived_sessions')) {
+    if ($folderName -eq 'archived_sessions' -and -not $IncludeArchivedSessions) { continue }
+    $candidate = Join-Path $CodexHome $folderName
+    if (Test-Path -LiteralPath $candidate -PathType Container) {
+        $sessionRoots.Add($candidate)
+    }
+}
+if ($sessionRoots.Count -eq 0) {
+    throw "No Codex session-log folder was found under: $CodexHome"
 }
 
 $script:seen = @{}
@@ -84,6 +105,23 @@ $script:isRefreshing = $false
 $script:startedAt = Get-Date
 $script:rangeStart = (Get-Date).AddHours(-$HistoryHours)
 $script:rangeEnd = [datetime]::MaxValue
+$script:scanStats = [pscustomobject]@{
+    AvailableFiles = 0
+    LoadedFiles = 0
+    LinesRead = [int64]0
+}
+
+if (-not [string]::IsNullOrWhiteSpace($FromDate)) {
+    try { $script:rangeStart = [datetime]::Parse($FromDate).Date }
+    catch { throw "Invalid -FromDate value '$FromDate'. Use YYYY-MM-DD." }
+}
+if (-not [string]::IsNullOrWhiteSpace($ToDate)) {
+    try { $script:rangeEnd = [datetime]::Parse($ToDate).Date.AddDays(1).AddTicks(-1) }
+    catch { throw "Invalid -ToDate value '$ToDate'. Use YYYY-MM-DD." }
+}
+if ($script:rangeStart -gt $script:rangeEnd) {
+    throw 'The From date must be before or equal to the To date.'
+}
 
 function Format-Tokens {
     param([int64]$Value)
@@ -299,8 +337,10 @@ function Get-FriendlyTaskLabel {
 }
 
 function Get-SessionLogFiles {
-    [System.IO.Directory]::EnumerateFiles($sessionRoot, '*.jsonl', [System.IO.SearchOption]::AllDirectories) |
-        ForEach-Object { [System.IO.FileInfo]$_ }
+    foreach ($root in $sessionRoots) {
+        [System.IO.Directory]::EnumerateFiles($root, '*.jsonl', [System.IO.SearchOption]::AllDirectories) |
+            ForEach-Object { [System.IO.FileInfo]$_ }
+    }
 }
 
 function Get-NewLogLines {
@@ -363,6 +403,50 @@ function Test-InSelectedRange {
 function Format-DateRange {
     $endText = if ($script:rangeEnd -eq [datetime]::MaxValue) { 'Now' } else { $script:rangeEnd.ToString('yyyy-MM-dd') }
     return '{0} to {1}' -f $script:rangeStart.ToString('yyyy-MM-dd'), $endText
+}
+
+function Get-AvailableDateBounds {
+    $dates = [System.Collections.Generic.List[datetime]]::new()
+    foreach ($file in @(Get-SessionLogFiles)) {
+        $candidate = $null
+        if ($file.FullName -match '[\\/](?:sessions|archived_sessions)[\\/](\d{4})[\\/](\d{2})[\\/](\d{2})[\\/]') {
+            $candidate = '{0}-{1}-{2}' -f $Matches[1], $Matches[2], $Matches[3]
+        }
+        elseif ($file.Name -match 'rollout-(\d{4})-(\d{2})-(\d{2})') {
+            $candidate = '{0}-{1}-{2}' -f $Matches[1], $Matches[2], $Matches[3]
+        }
+        if ($candidate) {
+            try {
+                $dates.Add([datetime]::ParseExact($candidate, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture))
+                continue
+            }
+            catch { }
+        }
+        $dates.Add($file.LastWriteTime.Date)
+    }
+    $start = if ($dates.Count -gt 0) { @($dates | Sort-Object | Select-Object -First 1)[0] } else { (Get-Date).Date }
+    return [pscustomobject]@{ Start = $start.Date; End = (Get-Date).Date }
+}
+
+function Get-DatePresetRange {
+    param(
+        [ValidateSet('Today', 'Last 7 days', 'Last 30 days', 'All available')]
+        [string]$Preset,
+        [datetime]$Today = (Get-Date).Date
+    )
+
+    $end = $Today.Date
+    switch ($Preset) {
+        'Today' { $start = $end }
+        'Last 7 days' { $start = $end.AddDays(-6) }
+        'Last 30 days' { $start = $end.AddDays(-29) }
+        'All available' {
+            $bounds = Get-AvailableDateBounds
+            $start = $bounds.Start
+            $end = $bounds.End
+        }
+    }
+    return [pscustomobject]@{ Start = $start.Date; End = $end.Date }
 }
 
 function Get-RiskLabel {
@@ -572,14 +656,18 @@ function Convert-IntegrationEvent {
 }
 
 function Update-Events {
-    $files = Get-SessionLogFiles |
+    $availableFiles = @(Get-SessionLogFiles)
+    $files = @($availableFiles |
         Where-Object { $_.LastWriteTime -ge $script:rangeStart } |
-        Sort-Object LastWriteTime
+        Sort-Object LastWriteTime)
+    $script:scanStats.AvailableFiles = $availableFiles.Count
+    $script:scanStats.LoadedFiles = $files.Count
 
     foreach ($file in $files) {
         Get-NewLogLines -Path $file.FullName | ForEach-Object {
             $line = $_
             if ([string]::IsNullOrWhiteSpace($line)) { return }
+            $script:scanStats.LinesRead++
             Update-SessionInfo -Line $line -SourceFile $file.FullName
             Update-TaskTitleFromLine -Line $line -SourceFile $file.FullName
 
@@ -587,11 +675,11 @@ function Update-Events {
             if (-not $script:activitySeen.ContainsKey($activityFingerprint)) {
                 $script:activitySeen[$activityFingerprint] = $true
                 $activity = Convert-ActivityEvent -Line $line -SourceFile $file.FullName
-                if ($null -ne $activity -and $activity.Label -ne 'LOG' -and (Test-InSelectedRange -At $activity.At)) {
+                if ($null -ne $activity -and $activity.Label -ne 'LOG') {
                     $script:activityEvents.Add($activity)
                 }
                 $integration = Convert-IntegrationEvent -Line $line -SourceFile $file.FullName
-                if ($null -ne $integration -and (Test-InSelectedRange -At $integration.At)) {
+                if ($null -ne $integration) {
                     $script:integrationEvents.Add($integration)
                 }
             }
@@ -601,22 +689,13 @@ function Update-Events {
                 if ($script:seen.ContainsKey($fingerprint)) { return }
                 $script:seen[$fingerprint] = $true
                 $usageEvent = Convert-TokenEvent -Line $line -SourceFile $file.FullName
-                if ($null -ne $usageEvent -and (Test-InSelectedRange -At $usageEvent.At)) {
+                if ($null -ne $usageEvent) {
                     $script:events.Add($usageEvent)
                 }
             }
         }
     }
 
-    $kept = @($script:events | Where-Object { Test-InSelectedRange -At $_.At })
-    $script:events.Clear()
-    foreach ($usageEvent in $kept) { $script:events.Add($usageEvent) }
-    $keptActivity = @($script:activityEvents | Where-Object { Test-InSelectedRange -At $_.At })
-    $script:activityEvents.Clear()
-    foreach ($activity in $keptActivity) { $script:activityEvents.Add($activity) }
-    $keptIntegrations = @($script:integrationEvents | Where-Object { Test-InSelectedRange -At $_.At })
-    $script:integrationEvents.Clear()
-    foreach ($integration in $keptIntegrations) { $script:integrationEvents.Add($integration) }
     if ($script:seen.Count -gt 10000) {
         $rebuilt = @{}
         foreach ($usageEvent in $script:events) { $rebuilt[$usageEvent.EventId] = $true }
@@ -637,12 +716,16 @@ function Reset-MonitorWindow {
     $script:seen.Clear()
     $script:activitySeen.Clear()
     $script:fileOffsets = @{}
-    $files = Get-SessionLogFiles |
-        Where-Object { $_.LastWriteTime -ge $script:rangeStart }
-
+    $script:scanStats.LinesRead = [int64]0
+    $files = @(Get-SessionLogFiles)
     foreach ($file in $files) {
-        [void](Get-NewLogLines -Path $file.FullName)
+        $script:fileOffsets[$file.FullName] = [pscustomobject]@{
+            Offset = [int64]$file.Length
+            Remainder = ''
+        }
     }
+    $script:scanStats.AvailableFiles = $files.Count
+    $script:scanStats.LoadedFiles = 0
     $script:startedAt = Get-Date
 }
 
@@ -658,6 +741,7 @@ function Reload-Logs {
     $script:latestSession = $null
     $script:focusedSession = $null
     $script:focusedEventId = $null
+    $script:scanStats.LinesRead = [int64]0
     Update-Events
     $script:startedAt = Get-Date
 }
@@ -672,13 +756,15 @@ function Set-MonitorDateRange {
     }
     $script:rangeStart = $from
     $script:rangeEnd = $to.AddDays(1).AddTicks(-1)
-    Reload-Logs
+    # Update-Events reuses the already parsed in-memory catalog and scans only
+    # files that were not needed by the previous, narrower range.
+    Update-Events
 }
 
 function Get-DisplayEvents {
     param([string]$Mode)
 
-    $ordered = @($script:events | Sort-Object At -Descending)
+    $ordered = @($script:events | Where-Object { Test-InSelectedRange -At $_.At } | Sort-Object At -Descending)
     $latest = if ($ordered.Count -gt 0) { $ordered[0] } else { $null }
     if ($null -eq $latest) { return @() }
     $script:latestSource = $latest.Source
@@ -696,7 +782,7 @@ function Get-DisplayEvents {
 function Get-DisplayActivity {
     param([string]$Mode)
 
-    $ordered = @($script:activityEvents | Sort-Object At -Descending)
+    $ordered = @($script:activityEvents | Where-Object { Test-InSelectedRange -At $_.At } | Sort-Object At -Descending)
     if ($Mode -eq 'Follow latest' -and $null -ne $script:latestSession) {
         return @($ordered | Where-Object { $_.Session -eq $script:latestSession })
     }
@@ -710,7 +796,7 @@ function Get-DisplayActivity {
 function Get-DisplayIntegrations {
     param([string]$Mode)
 
-    $ordered = @($script:integrationEvents | Sort-Object At -Descending)
+    $ordered = @($script:integrationEvents | Where-Object { Test-InSelectedRange -At $_.At } | Sort-Object At -Descending)
     if ($Mode -eq 'Follow latest' -and $null -ne $script:latestSession) {
         return @($ordered | Where-Object { $_.Session -eq $script:latestSession })
     }
@@ -750,6 +836,56 @@ function Get-SumPack {
     }
 }
 
+function Get-LocalDailySummary {
+    param(
+        [object[]]$UsageEvents,
+        [object[]]$IntegrationEvents
+    )
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    foreach ($group in @($UsageEvents | Group-Object { $_.At.Date } | Sort-Object Name)) {
+        $items = @($group.Group)
+        if ($items.Count -eq 0) { continue }
+        $day = $items[0].At.Date
+        $sum = Get-SumPack -Items $items
+        $integrationCount = @($IntegrationEvents | Where-Object { $_.At.Date -eq $day }).Count
+        $rows.Add([pscustomobject][ordered]@{
+            Date = $day.ToString('yyyy-MM-dd')
+            Events = $items.Count
+            Sessions = @($items | Select-Object -ExpandProperty Session -Unique).Count
+            FreshBurn = $sum.FreshBurn
+            NewInput = $sum.NewInput
+            Output = $sum.Output
+            ReasoningSubset = $sum.Reasoning
+            Context = $sum.Total
+            CachedInput = $sum.Cached
+            IntegrationCalls = $integrationCount
+        })
+    }
+    return @($rows)
+}
+
+function Export-LocalUsageSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [object[]]$UsageEvents = $null,
+        [object[]]$IntegrationEvents = $null
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Choose an output CSV path.' }
+    if ($null -eq $UsageEvents) { $UsageEvents = @(Get-DisplayEvents -Mode 'All sessions') }
+    if ($null -eq $IntegrationEvents) { $IntegrationEvents = @(Get-DisplayIntegrations -Mode 'All sessions') }
+    $rows = @(Get-LocalDailySummary -UsageEvents $UsageEvents -IntegrationEvents $IntegrationEvents)
+    if ($rows.Count -eq 0) { throw 'There are no token events in the selected date range to export.' }
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "The output folder does not exist: $parent"
+    }
+    $rows | Export-Csv -LiteralPath $Path -NoTypeInformation -Encoding UTF8
+    return $rows
+}
+
 function Get-ContextHealth {
     param([object]$Sum, [int]$EventCount, [int]$SpikeCount)
 
@@ -761,6 +897,65 @@ function Get-ContextHealth {
     if ($avgContext -ge $WarnContextTokens -and $cacheRatio -ge 0.75) { return 'Bloated replay' }
     if ($avgContext -ge ($WarnContextTokens * 0.70)) { return 'Growing' }
     return 'Healthy'
+}
+
+function ConvertTo-ResetDateTime {
+    param([object]$Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return ([datetime]$Value).ToLocalTime() }
+    if ($Value -is [datetimeoffset]) { return ([datetimeoffset]$Value).LocalDateTime }
+
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    [int64]$epoch = 0
+    if ([int64]::TryParse($text, [ref]$epoch)) {
+        try {
+            if ([Math]::Abs($epoch) -ge 100000000000) {
+                return [datetimeoffset]::FromUnixTimeMilliseconds($epoch).LocalDateTime
+            }
+            return [datetimeoffset]::FromUnixTimeSeconds($epoch).LocalDateTime
+        }
+        catch { return $null }
+    }
+
+    try { return [datetimeoffset]::Parse($text).LocalDateTime } catch { return $null }
+}
+
+function Format-ResetTime {
+    param([object]$Value)
+
+    $resetAt = ConvertTo-ResetDateTime -Value $Value
+    if ($null -eq $resetAt) { return '' }
+    $remaining = $resetAt - (Get-Date)
+    if ($remaining.TotalMinutes -le 0) { return 'reset metadata expired' }
+    if ($remaining.TotalDays -ge 1) {
+        return 'resets in {0}d {1}h' -f [Math]::Floor($remaining.TotalDays), $remaining.Hours
+    }
+    if ($remaining.TotalHours -ge 1) {
+        return 'resets in {0}h {1}m' -f [Math]::Floor($remaining.TotalHours), $remaining.Minutes
+    }
+    return 'resets in {0}m' -f [Math]::Max(1, [Math]::Ceiling($remaining.TotalMinutes))
+}
+
+function Get-QuotaPaceText {
+    param([object]$Window, [double]$UsedPercent)
+
+    $resetAt = ConvertTo-ResetDateTime -Value (Get-ValueByName -Object $Window -Name 'reset_at')
+    $windowMinutes = Get-ValueByName -Object $Window -Name 'window_minutes'
+    if ($null -eq $windowMinutes) { $windowMinutes = Get-ValueByName -Object $Window -Name 'limit_window_minutes' }
+    if ($null -eq $resetAt -or $null -eq $windowMinutes) { return '' }
+    try { $duration = [double]$windowMinutes } catch { return '' }
+    if ($duration -le 0) { return '' }
+
+    $startAt = $resetAt.AddMinutes(-$duration)
+    $elapsed = ((Get-Date) - $startAt).TotalMinutes
+    if ($elapsed -lt 0 -or $elapsed -gt $duration) { return '' }
+    $expected = [Math]::Max(0, [Math]::Min(100, ($elapsed / $duration) * 100))
+    $difference = [Math]::Round($UsedPercent - $expected)
+    if ([Math]::Abs($difference) -lt 5) { return 'near even pace' }
+    if ($difference -gt 0) { return "$difference pts above even pace" }
+    return ('{0} pts below even pace' -f [Math]::Abs($difference))
 }
 
 function Get-QuotaText {
@@ -779,7 +974,10 @@ function Get-QuotaText {
         $label = if ($name -eq 'primary') { '5-hour/window' } else { 'weekly/window' }
         if ($null -ne $used) {
             $text = '{0}: {1:N0}%' -f $label, ([double]$used)
-            if ($reset) { $text += " reset $reset" }
+            $resetText = Format-ResetTime -Value $reset
+            if ($resetText) { $text += " ($resetText)" }
+            $paceText = Get-QuotaPaceText -Window $window -UsedPercent ([double]$used)
+            if ($paceText) { $text += ", $paceText" }
             $parts.Add($text)
         }
     }
@@ -1071,10 +1269,11 @@ function Send-Alert {
 Update-Events
 
 if ($Once) {
-    $latest = @($script:events | Sort-Object At -Descending | Select-Object -First 1)
+    $selectedEvents = @(Get-DisplayEvents -Mode 'All sessions')
+    $latest = @($selectedEvents | Select-Object -First 1)
     if ($latest.Count -eq 0) { Write-Output 'No recent token events found.'; exit 0 }
     $usageEvent = $latest[0]
-    Write-Output ("Events={0}; Latest={1}; FreshBurn={2}; NewInput={3}; Context={4}; Risk={5}" -f $script:events.Count, $usageEvent.At.ToString('HH:mm:ss'), (Format-Tokens $usageEvent.FreshBurn), (Format-Tokens $usageEvent.NewInput), (Format-Tokens $usageEvent.Total), $usageEvent.Risk)
+    Write-Output ("Events={0}; Latest={1}; FreshBurn={2}; NewInput={3}; Context={4}; Risk={5}" -f $selectedEvents.Count, $usageEvent.At.ToString('HH:mm:ss'), (Format-Tokens $usageEvent.FreshBurn), (Format-Tokens $usageEvent.NewInput), (Format-Tokens $usageEvent.Total), $usageEvent.Risk)
     exit 0
 }
 
@@ -1105,11 +1304,11 @@ if ($TaskSmokeTest) {
 }
 
 if ($DateRangeSmokeTest) {
-    $ordered = @($script:events | Sort-Object At)
+    $ordered = @(Get-DisplayEvents -Mode 'All sessions' | Sort-Object At)
     if ($ordered.Count -eq 0) { throw 'Date-range smoke test requires at least one token event.' }
     $testDate = $ordered[0].At.Date
     Set-MonitorDateRange -FromDate $testDate -ToDate $testDate
-    Write-Output ('DateRange={0}; Events={1}' -f (Format-DateRange), $script:events.Count)
+    Write-Output ('DateRange={0}; Events={1}' -f (Format-DateRange), @(Get-DisplayEvents -Mode 'All sessions').Count)
     exit 0
 }
 
@@ -1123,6 +1322,63 @@ if ($AlertSmokeTest) {
     $activeEvent.NewInput = $WarnNewInputTokens
     $activeAlert = Should-Alert -UsageEvent $activeEvent -Minute $minute
     Write-Output ('StaleAlert={0}; ActiveAlert={1}' -f $staleAlert, $activeAlert)
+    exit 0
+}
+
+if ($ArchivedSmokeTest) {
+    $archived = @($script:events | Where-Object { $_.Source -match '[\\/]archived_sessions[\\/]' })
+    Write-Output ('ArchivedEvents={0}; TotalEvents={1}' -f $archived.Count, $script:events.Count)
+    exit 0
+}
+
+if ($PresetSmokeTest) {
+    $anchor = [datetime]'2026-07-27'
+    $week = Get-DatePresetRange -Preset 'Last 7 days' -Today $anchor
+    $month = Get-DatePresetRange -Preset 'Last 30 days' -Today $anchor
+    $all = Get-DatePresetRange -Preset 'All available' -Today $anchor
+    Write-Output ('Week={0}:{1}; MonthDays={2}; AllStart={3}' -f $week.Start.ToString('yyyy-MM-dd'), $week.End.ToString('yyyy-MM-dd'), (($month.End - $month.Start).Days + 1), $all.Start.ToString('yyyy-MM-dd'))
+    exit 0
+}
+
+if ($RangeCacheSmokeTest) {
+    $linesBefore = $script:scanStats.LinesRead
+    Set-MonitorDateRange -FromDate ([datetime]'2026-07-25') -ToDate ([datetime]'2026-07-25')
+    $firstCount = @(Get-DisplayEvents -Mode 'All sessions').Count
+    Set-MonitorDateRange -FromDate ([datetime]'2026-07-26') -ToDate ([datetime]'2026-07-26')
+    $secondCount = @(Get-DisplayEvents -Mode 'All sessions').Count
+    $cacheStable = ($script:scanStats.LinesRead -eq $linesBefore)
+    Write-Output ('CacheStable={0}; FirstRange={1}; SecondRange={2}; LinesRead={3}' -f $cacheStable, $firstCount, $secondCount, $script:scanStats.LinesRead)
+    exit 0
+}
+
+if ($QuotaResetSmokeTest) {
+    $resetAt = (Get-Date).AddMinutes(90)
+    $epoch = [datetimeoffset]$resetAt
+    $window = [pscustomobject]@{
+        used_percent = 60
+        reset_at = $epoch.ToUnixTimeSeconds()
+        window_minutes = 300
+    }
+    $usageEvent = [pscustomobject]@{
+        RateLimits = [pscustomobject]@{ primary = $window }
+    }
+    Write-Output (Get-QuotaText -UsageEvent $usageEvent)
+    exit 0
+}
+
+if ($ExportSmokeTest) {
+    if ([string]::IsNullOrWhiteSpace($ExportPath)) { throw '-ExportSmokeTest requires -ExportPath.' }
+    $rows = @(Export-LocalUsageSummary -Path $ExportPath)
+    Write-Output ('ExportRows={0}; Events={1}; Path={2}' -f $rows.Count, (@($rows | Measure-Object -Property Events -Sum)[0].Sum), $ExportPath)
+    exit 0
+}
+
+if ($EnterpriseSmokeTest) {
+    if ([string]::IsNullOrWhiteSpace($EnterpriseCsvPath)) { throw '-EnterpriseSmokeTest requires -EnterpriseCsvPath.' }
+    $enterpriseModule = Join-Path $scriptDir 'Live-Codex-Usage-Enterprise.psm1'
+    Import-Module -Name $enterpriseModule -Force
+    $summary = Import-WorkspaceAnalyticsReport -Path $EnterpriseCsvPath
+    Write-Output ('Rows={0}; ActiveUsers={1}; Messages={2}; ToolMessages={3}; SeatTypes={4}' -f $summary.Rows, $summary.ActiveUsers, $summary.TotalMessages, $summary.ToolMessages, $summary.SeatTypes.Count)
     exit 0
 }
 
@@ -1156,6 +1412,8 @@ $form.MinimumSize = New-Object System.Drawing.Size(820, 640)
 $form.StartPosition = 'CenterScreen'
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 $form.AutoScroll = $true
+$form.KeyPreview = $true
+$form.AccessibleName = 'Live Codex Usage Monitor'
 $form.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 $form.ForeColor = [System.Drawing.Color]::Gainsboro
 
@@ -1209,14 +1467,18 @@ $title = Add-Label 'LIVE CODEX USAGE - local logs only' 18 14 760 30 16
 $title.ForeColor = [System.Drawing.Color]::Aqua
 $statusLabel = Add-Label 'Status: waiting' 856 16 246 26 13
 $statusLabel.ForeColor = [System.Drawing.Color]::Khaki
-$statusMeter = New-Object System.Windows.Forms.ProgressBar
+$statusMeter = New-Object System.Windows.Forms.Panel
 $statusMeter.Location = New-Object System.Drawing.Point(1118, 18)
 $statusMeter.Size = New-Object System.Drawing.Size(160, 20)
-$statusMeter.Minimum = 0
-$statusMeter.Maximum = 100
-$statusMeter.Value = 0
-$statusMeter.Style = 'Continuous'
+$statusMeter.BackColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
+$statusMeter.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
 $statusMeter.Anchor = 'Top,Right'
+$statusMeter.AccessibleName = 'Overall usage status meter'
+$statusMeterFill = New-Object System.Windows.Forms.Panel
+$statusMeterFill.Location = New-Object System.Drawing.Point(0, 0)
+$statusMeterFill.Size = New-Object System.Drawing.Size(0, 18)
+$statusMeterFill.BackColor = [System.Drawing.Color]::Lime
+$statusMeter.Controls.Add($statusMeterFill)
 $form.Controls.Add($statusMeter)
 $freshLabel = Add-Label 'Fresh burn: waiting for token events' 18 52 1240 32 15
 $freshLabel.ForeColor = [System.Drawing.Color]::Lime
@@ -1230,7 +1492,7 @@ $modelSummaryLabel = Add-Label 'Models: waiting for token events' 18 194 1240 22
 $modelSummaryLabel.ForeColor = [System.Drawing.Color]::Khaki
 $timeSummaryLabel = Add-Label 'Time: waiting for token events' 18 218 1240 22 10
 $timeSummaryLabel.ForeColor = [System.Drawing.Color]::Khaki
-$noteLabel = Add-Label 'Read-only local-log monitor. Cached input is a subset of input. No prompts, responses, tool data, files, or network activity are written or sent.' 18 242 1240 22 10
+$noteLabel = Add-Label 'Offline local-log monitor. Only explicit aggregate CSV exports write files; prompts, responses, tool data, paths, and network data are never exported or sent.' 18 242 1240 22 10
 $noteLabel.ForeColor = [System.Drawing.Color]::DarkGray
 $sessionSummaryLabel = Add-Label 'Sessions: waiting for token events' 18 264 1240 22 10
 $sessionSummaryLabel.ForeColor = [System.Drawing.Color]::Khaki
@@ -1243,19 +1505,32 @@ $viewLatestButton = Add-Button 'Latest' 164 310 78 30
 $viewPinnedButton = Add-Button 'Pinned' 252 310 82 30
 $pinButton = Add-Button 'Pin latest' 344 310 90 30
 $clearButton = Add-Button 'Start fresh' 444 310 100 30
-$fromLabel = Add-Label 'From' 554 314 32 24 9
-$fromPicker = Add-DatePicker -Value $script:rangeStart.Date -X 588 -Y 311 -Width 110
-$toLabel = Add-Label 'To' 706 314 20 24 9
-$toPicker = Add-DatePicker -Value (Get-Date).Date -X 728 -Y 311 -Width 110
-$loadRangeButton = Add-Button 'Load dates' 846 310 96 30
-$miniButton = Add-Button 'Mini mode' 950 310 95 30
-$historyLabel = Add-Label ("Loaded: {0}" -f (Format-DateRange)) 1053 314 235 24 9
+$miniButton = Add-Button 'Mini mode' 554 310 95 30
+$enterpriseButton = Add-Button 'Enterprise' 659 310 130 30
+
+$presetLabel = Add-Label 'Range' 18 350 42 24 9
+$presetBox = New-Object System.Windows.Forms.ComboBox
+$presetBox.Location = New-Object System.Drawing.Point(62, 347)
+$presetBox.Size = New-Object System.Drawing.Size(130, 28)
+$presetBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+$presetBox.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+[void]$presetBox.Items.AddRange(@('Today', 'Last 7 days', 'Last 30 days', 'All available', 'Custom'))
+$presetBox.SelectedItem = 'Custom'
+$form.Controls.Add($presetBox)
+$fromLabel = Add-Label 'From' 206 350 38 24 9
+$fromPicker = Add-DatePicker -Value $script:rangeStart.Date -X 246 -Y 347 -Width 110
+$toLabel = Add-Label 'To' 366 350 20 24 9
+$initialToDate = if ($script:rangeEnd -eq [datetime]::MaxValue) { (Get-Date).Date } else { $script:rangeEnd.Date }
+$toPicker = Add-DatePicker -Value $initialToDate -X 388 -Y 347 -Width 110
+$loadRangeButton = Add-Button 'Load dates' 508 346 96 30
+$exportButton = Add-Button 'Export CSV' 614 346 96 30
+$historyLabel = Add-Label ("Loaded: {0}" -f (Format-DateRange)) 720 350 568 24 9
 $historyLabel.ForeColor = [System.Drawing.Color]::DarkGray
 
-$tokenLabel = Add-Label 'Token events' 18 350 820 22 11
+$tokenLabel = Add-Label 'Token events' 18 386 820 22 11
 $tokenLabel.ForeColor = [System.Drawing.Color]::Aqua
 $grid = New-Object System.Windows.Forms.DataGridView
-$grid.Location = New-Object System.Drawing.Point(18, 376)
+$grid.Location = New-Object System.Drawing.Point(18, 412)
 $grid.Size = New-Object System.Drawing.Size(815, 290)
 $grid.Anchor = 'Top,Bottom,Left'
 $grid.ReadOnly = $true
@@ -1279,11 +1554,11 @@ $grid.Columns['Risk'].FillWeight = 140
 $grid.Columns['Task'].FillWeight = 260
 $form.Controls.Add($grid)
 
-$taskLabel = Add-Label 'Task breakdown: double-click a task to pin it' 850 350 438 22 11
+$taskLabel = Add-Label 'Task breakdown: double-click a task to pin it' 850 386 438 22 11
 $taskLabel.ForeColor = [System.Drawing.Color]::Aqua
 
 $taskGrid = New-Object System.Windows.Forms.DataGridView
-$taskGrid.Location = New-Object System.Drawing.Point(850, 376)
+$taskGrid.Location = New-Object System.Drawing.Point(850, 412)
 $taskGrid.Size = New-Object System.Drawing.Size(438, 290)
 $taskGrid.Anchor = 'Top,Bottom,Right'
 $taskGrid.ReadOnly = $true
@@ -1383,15 +1658,45 @@ $script:visibleActivity = @()
 $script:visibleIntegrations = @()
 $script:visibleTasks = @()
 $script:normalFormSize = $form.Size
+$script:normalFormLocation = $form.Location
 $script:normalMinimumSize = New-Object System.Drawing.Size(820, 640)
 $script:normalMiniButtonLocation = $miniButton.Location
 $script:fullModeControls = @(
     $modelSummaryLabel, $timeSummaryLabel, $noteLabel, $sessionSummaryLabel, $integrationSummaryLabel,
     $modeLabel, $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $clearButton,
-    $fromLabel, $fromPicker, $toLabel, $toPicker, $loadRangeButton,
+    $enterpriseButton, $presetLabel, $presetBox, $fromLabel, $fromPicker, $toLabel, $toPicker, $loadRangeButton, $exportButton,
     $historyLabel, $tokenLabel, $grid, $taskLabel, $taskGrid,
     $integrationLabel, $integrationGrid, $activityLabel, $activityGrid, $explainBox
 )
+
+$grid.AccessibleName = 'Token events table'
+$taskGrid.AccessibleName = 'Task breakdown table'
+$integrationGrid.AccessibleName = 'Integration activity table'
+$activityGrid.AccessibleName = 'Sanitized activity table'
+$fromPicker.AccessibleName = 'Usage range start date'
+$toPicker.AccessibleName = 'Usage range end date'
+$presetBox.AccessibleName = 'Usage date range preset'
+$loadRangeButton.AccessibleName = 'Load selected date range'
+$exportButton.AccessibleName = 'Export privacy-safe daily summary'
+$enterpriseButton.AccessibleName = 'Import Workspace Analytics CSV'
+$miniButton.AccessibleName = 'Toggle compact monitor mode'
+
+$toolTip = New-Object System.Windows.Forms.ToolTip
+$toolTip.SetToolTip($presetBox, 'Choose a quick range. Custom keeps the calendar selections.')
+$toolTip.SetToolTip($loadRangeButton, 'Load the complete selected date range (Ctrl+L).')
+$toolTip.SetToolTip($exportButton, 'Export daily aggregates only; no prompts, paths, task names, or identifiers (Ctrl+E).')
+$toolTip.SetToolTip($enterpriseButton, 'Open an aggregate Workspace Analytics CSV from ChatGPT Enterprise or Edu.')
+$toolTip.SetToolTip($miniButton, 'Toggle the always-on-top compact view (Ctrl+M).')
+$toolTip.SetToolTip($clearButton, 'Discard the in-memory window and watch only newly appended log records.')
+
+$tabOrder = @(
+    $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $clearButton, $miniButton,
+    $enterpriseButton, $presetBox, $fromPicker, $toPicker, $loadRangeButton, $exportButton,
+    $grid, $taskGrid, $integrationGrid, $activityGrid, $explainBox
+)
+for ($tabIndex = 0; $tabIndex -lt $tabOrder.Count; $tabIndex++) {
+    $tabOrder[$tabIndex].TabIndex = $tabIndex
+}
 
 function Update-ViewButtons {
     foreach ($button in @($viewAllButton, $viewLatestButton, $viewPinnedButton)) {
@@ -1426,7 +1731,7 @@ function Update-ResponsiveLayout {
     $margin = 18
     $gap = 16
     $clientW = [Math]::Max(1120, $form.ClientSize.Width)
-    $clientH = [Math]::Max(900, $form.ClientSize.Height)
+    $clientH = [Math]::Max(940, $form.ClientSize.Height)
     $contentW = $clientW - ($margin * 2)
     $rightW = [Math]::Max(480, [Math]::Min(650, [int]($contentW * 0.38)))
     $leftW = [Math]::Max(560, $contentW - $gap - $rightW)
@@ -1447,19 +1752,19 @@ function Update-ResponsiveLayout {
     $activityH = 140
     $activityY = $explainY - $activityH - 12
     $activityLabelY = $activityY - 28
-    $gridY = 376
+    $gridY = 412
     $gridH = [Math]::Max(220, $activityLabelY - $gridY - 10)
     $lowerGap = 16
     $integrationW = [Math]::Max(420, [int](($contentW - $lowerGap) * 0.36))
     $activityW = $contentW - $lowerGap - $integrationW
     $activityX = $margin + $integrationW + $lowerGap
 
-    $tokenLabel.Location = New-Object System.Drawing.Point($margin, 350)
+    $tokenLabel.Location = New-Object System.Drawing.Point($margin, 386)
     $tokenLabel.Size = New-Object System.Drawing.Size($leftW, 22)
     $grid.Location = New-Object System.Drawing.Point($margin, $gridY)
     $grid.Size = New-Object System.Drawing.Size($leftW, $gridH)
 
-    $taskLabel.Location = New-Object System.Drawing.Point($rightX, 350)
+    $taskLabel.Location = New-Object System.Drawing.Point($rightX, 386)
     $taskLabel.Size = New-Object System.Drawing.Size($rightW, 22)
     $taskGrid.Location = New-Object System.Drawing.Point($rightX, $gridY)
     $taskGrid.Size = New-Object System.Drawing.Size($rightW, $gridH)
@@ -1476,11 +1781,17 @@ function Update-ResponsiveLayout {
 
     $explainBox.Location = New-Object System.Drawing.Point($margin, $explainY)
     $explainBox.Size = New-Object System.Drawing.Size($contentW, $explainH)
+    $historyLabel.Size = New-Object System.Drawing.Size([Math]::Max(260, $contentW - 702), 24)
 }
 
 function Set-MiniMode {
     param([bool]$Enabled)
 
+    $wasMini = $script:isMiniMode
+    if ($Enabled -and -not $wasMini) {
+        $script:normalFormSize = $form.Size
+        $script:normalFormLocation = $form.Location
+    }
     $script:isMiniMode = $Enabled
     foreach ($control in $script:fullModeControls) {
         $control.Visible = -not $Enabled
@@ -1519,6 +1830,7 @@ function Set-MiniMode {
         $form.TopMost = $false
         $form.MinimumSize = $script:normalMinimumSize
         $form.Size = $script:normalFormSize
+        if ($wasMini) { $form.Location = $script:normalFormLocation }
         $miniButton.Text = 'Mini mode'
         $miniButton.Location = $script:normalMiniButtonLocation
         $miniButton.Size = New-Object System.Drawing.Size(95, 30)
@@ -1574,7 +1886,9 @@ function Refresh-Display {
     $status = Get-OverallStatus -Latest $latest -Minute $minute
     $statusLabel.Text = 'Status: {0} ({1})' -f $status.Label, $status.Detail
     $statusLabel.ForeColor = $status.Color
-    try { $statusMeter.Value = [Math]::Max($statusMeter.Minimum, [Math]::Min($statusMeter.Maximum, [int]$status.Percent)) } catch { $statusMeter.Value = 0 }
+    $meterPercent = [Math]::Max(0, [Math]::Min(100, [int]$status.Percent))
+    $statusMeterFill.BackColor = $status.Color
+    $statusMeterFill.Size = New-Object System.Drawing.Size([Math]::Floor(($statusMeter.ClientSize.Width * $meterPercent) / 100), $statusMeter.ClientSize.Height)
 
     if ($null -eq $latest) {
         $freshLabel.Text = 'Fresh burn: waiting for token events'
@@ -1613,7 +1927,7 @@ function Refresh-Display {
     else {
         $guidanceLabel.ForeColor = [System.Drawing.Color]::White
     }
-    $windowLabel.Text = 'Monitor window - events: {0} | fresh {1} | context {2} | sessions {3} | started {4}' -f $visible.Count, (Format-Tokens $window.FreshBurn), (Format-Tokens $window.Total), (@($visible | Select-Object -ExpandProperty Source -Unique).Count), $script:startedAt.ToString('HH:mm:ss')
+    $windowLabel.Text = 'Monitor window - events: {0} | fresh {1} | context {2} | sessions {3} | logs {4}/{5} | started {6}' -f $visible.Count, (Format-Tokens $window.FreshBurn), (Format-Tokens $window.Total), (@($visible | Select-Object -ExpandProperty Source -Unique).Count), $script:scanStats.LoadedFiles, $script:scanStats.AvailableFiles, $script:startedAt.ToString('HH:mm:ss')
     $quotaLabel.Text = Get-QuotaText -UsageEvent $latest
     $modelSummaryLabel.Text = Get-ModelBreakdownText -VisibleEvents $visible
     $timeSummaryLabel.Text = Get-TimeSummaryText -VisibleEvents $visible
@@ -1768,6 +2082,196 @@ function Refresh-Display {
     }
 }
 
+function Show-EnterpriseAnalyticsDialog {
+    param(
+        [string]$Path = '',
+        [switch]$ConstructionOnly,
+        [string]$ScreenshotPath = ''
+    )
+
+    $selectedPath = $Path
+    if ([string]::IsNullOrWhiteSpace($selectedPath)) {
+        $openDialog = New-Object System.Windows.Forms.OpenFileDialog
+        try {
+            $openDialog.Title = 'Open Workspace Analytics user CSV'
+            $openDialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'
+            $openDialog.CheckFileExists = $true
+            $openDialog.Multiselect = $false
+            if ($openDialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+            $selectedPath = $openDialog.FileName
+        }
+        finally {
+            $openDialog.Dispose()
+        }
+    }
+
+    $enterpriseModule = Join-Path $scriptDir 'Live-Codex-Usage-Enterprise.psm1'
+    Import-Module -Name $enterpriseModule -Force
+    $summary = Import-WorkspaceAnalyticsReport -Path $selectedPath
+
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = 'Enterprise Workspace Analytics - Aggregate View'
+    $dialog.Size = New-Object System.Drawing.Size(980, 720)
+    $dialog.MinimumSize = New-Object System.Drawing.Size(760, 560)
+    $dialog.StartPosition = 'CenterParent'
+    $dialog.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
+    $dialog.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    $dialog.ForeColor = [System.Drawing.Color]::Gainsboro
+    $dialog.AccessibleName = 'Enterprise Workspace Analytics aggregate view'
+
+    $heading = New-Object System.Windows.Forms.Label
+    $heading.Text = 'WORKSPACE ANALYTICS - aggregate only'
+    $heading.Location = New-Object System.Drawing.Point(18, 16)
+    $heading.Size = New-Object System.Drawing.Size(920, 32)
+    $heading.Anchor = 'Top,Left,Right'
+    $heading.Font = New-Object System.Drawing.Font('Segoe UI', 16)
+    $heading.ForeColor = [System.Drawing.Color]::Aqua
+    $dialog.Controls.Add($heading)
+
+    $overview = New-Object System.Windows.Forms.Label
+    $periodText = if ($summary.PeriodStart -and $summary.PeriodEnd) {
+        '{0} to {1}' -f $summary.PeriodStart.ToString('yyyy-MM-dd'), $summary.PeriodEnd.ToString('yyyy-MM-dd')
+    }
+    else { 'period not supplied' }
+    $overview.Text = 'Period {0} | rows {1} | active users {2} | messages {3:N0} | GPT {4:N0} | tools {5:N0} | projects {6:N0}' -f $periodText, $summary.Rows, $summary.ActiveUsers, $summary.TotalMessages, $summary.GptMessages, $summary.ToolMessages, $summary.ProjectMessages
+    $overview.Location = New-Object System.Drawing.Point(18, 56)
+    $overview.Size = New-Object System.Drawing.Size(920, 54)
+    $overview.Anchor = 'Top,Left,Right'
+    $overview.Font = New-Object System.Drawing.Font('Segoe UI', 11)
+    $overview.ForeColor = [System.Drawing.Color]::White
+    $dialog.Controls.Add($overview)
+
+    $privacy = New-Object System.Windows.Forms.Label
+    $privacy.Text = 'Names, email addresses, public IDs, account IDs, prompt text, and file content are neither shown nor retained by this view.'
+    $privacy.Location = New-Object System.Drawing.Point(18, 112)
+    $privacy.Size = New-Object System.Drawing.Size(920, 28)
+    $privacy.Anchor = 'Top,Left,Right'
+    $privacy.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $privacy.ForeColor = [System.Drawing.Color]::DarkGray
+    $dialog.Controls.Add($privacy)
+
+    $tabs = New-Object System.Windows.Forms.TabControl
+    $tabs.Location = New-Object System.Drawing.Point(18, 148)
+    $tabs.Size = New-Object System.Drawing.Size(928, 500)
+    $tabs.Anchor = 'Top,Bottom,Left,Right'
+    $tabs.AccessibleName = 'Workspace Analytics breakdowns'
+    $dialog.Controls.Add($tabs)
+
+    $tabDefinitions = @(
+        [pscustomobject]@{ Title = 'Seat types'; Rows = @($summary.SeatTypes); Columns = @('Name','Users','Messages') },
+        [pscustomobject]@{ Title = 'Departments'; Rows = @($summary.Departments); Columns = @('Name','Users','Messages') },
+        [pscustomobject]@{ Title = 'Tools'; Rows = @($summary.Tools); Columns = @('Name','Messages') },
+        [pscustomobject]@{ Title = 'Models'; Rows = @($summary.Models); Columns = @('Name','Messages') }
+    )
+    foreach ($definition in $tabDefinitions) {
+        $tab = New-Object System.Windows.Forms.TabPage
+        $tab.Text = $definition.Title
+        $tab.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+        $tab.ForeColor = [System.Drawing.Color]::Gainsboro
+        $tabs.TabPages.Add($tab)
+
+        $summaryGrid = New-Object System.Windows.Forms.DataGridView
+        $summaryGrid.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $summaryGrid.ReadOnly = $true
+        $summaryGrid.AllowUserToAddRows = $false
+        $summaryGrid.AllowUserToDeleteRows = $false
+        $summaryGrid.RowHeadersVisible = $false
+        $summaryGrid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::Fill
+        $summaryGrid.BackgroundColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+        $summaryGrid.GridColor = [System.Drawing.Color]::FromArgb(65, 65, 65)
+        $summaryGrid.EnableHeadersVisualStyles = $false
+        $summaryGrid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
+        $summaryGrid.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::White
+        $summaryGrid.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+        $summaryGrid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Gainsboro
+        $summaryGrid.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(0, 90, 120)
+        $summaryGrid.AccessibleName = "$($definition.Title) aggregate table"
+        foreach ($column in $definition.Columns) { [void]$summaryGrid.Columns.Add($column, $column) }
+        foreach ($row in $definition.Rows) {
+            $values = foreach ($column in $definition.Columns) { $row.$column }
+            [void]$summaryGrid.Rows.Add([object[]]$values)
+        }
+        $tab.Controls.Add($summaryGrid)
+    }
+
+    if ($ConstructionOnly) {
+        if (-not [string]::IsNullOrWhiteSpace($ScreenshotPath)) {
+            $captureParent = Split-Path -Parent $ScreenshotPath
+            if ($captureParent -and -not (Test-Path -LiteralPath $captureParent -PathType Container)) {
+                throw "Screenshot folder does not exist: $captureParent"
+            }
+            $dialog.Show()
+            [System.Windows.Forms.Application]::DoEvents()
+            $bitmap = New-Object System.Drawing.Bitmap($dialog.ClientSize.Width, $dialog.ClientSize.Height)
+            try {
+                $dialog.DrawToBitmap($bitmap, (New-Object System.Drawing.Rectangle(0, 0, $bitmap.Width, $bitmap.Height)))
+                $bitmap.Save($ScreenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+            }
+            finally {
+                $bitmap.Dispose()
+                $dialog.Hide()
+            }
+        }
+        Write-Output ('Enterprise dialog constructed successfully; Tabs={0}' -f $tabs.TabPages.Count)
+    }
+    else {
+        [void]$dialog.ShowDialog($form)
+    }
+    $dialog.Dispose()
+}
+
+function Invoke-LoadSelectedRange {
+    if ($script:isRefreshing) { return }
+    try {
+        $loadRangeButton.Enabled = $false
+        $form.UseWaitCursor = $true
+        $historyLabel.Text = 'Loading selected dates...'
+        [System.Windows.Forms.Application]::DoEvents()
+        Set-MonitorDateRange -FromDate $fromPicker.Value -ToDate $toPicker.Value
+        Refresh-Display
+        $explainBox.Text = 'Loaded complete local Codex logs for {0}.' -f (Format-DateRange)
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to load dates') | Out-Null
+    }
+    finally {
+        $form.UseWaitCursor = $false
+        $loadRangeButton.Enabled = $true
+    }
+}
+
+function Invoke-LocalSummaryExport {
+    $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+    try {
+        $saveDialog.Title = 'Export privacy-safe daily usage summary'
+        $saveDialog.Filter = 'CSV files (*.csv)|*.csv'
+        $saveDialog.DefaultExt = 'csv'
+        $saveDialog.AddExtension = $true
+        $saveDialog.OverwritePrompt = $true
+        $saveDialog.FileName = 'codex-usage-summary-{0}-{1}.csv' -f $script:rangeStart.ToString('yyyyMMdd'), $(if ($script:rangeEnd -eq [datetime]::MaxValue) { (Get-Date).ToString('yyyyMMdd') } else { $script:rangeEnd.ToString('yyyyMMdd') })
+        if ($saveDialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+        $rows = @(Export-LocalUsageSummary -Path $saveDialog.FileName -UsageEvents $script:visibleEvents -IntegrationEvents $script:visibleIntegrations)
+        $explainBox.Text = 'Exported {0} daily aggregate row(s). The CSV excludes prompts, responses, task names, session IDs, source paths, tool arguments, and tool output.' -f $rows.Count
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to export summary') | Out-Null
+    }
+    finally {
+        $saveDialog.Dispose()
+    }
+}
+
+if ($EnterpriseUiSmokeTest) {
+    if ([string]::IsNullOrWhiteSpace($EnterpriseCsvPath)) { throw '-EnterpriseUiSmokeTest requires -EnterpriseCsvPath.' }
+    Show-EnterpriseAnalyticsDialog -Path $EnterpriseCsvPath -ConstructionOnly -ScreenshotPath $CaptureScreenshotPath
+    $form.Dispose()
+    if ($null -ne $script:notifyIcon) {
+        $script:notifyIcon.Visible = $false
+        $script:notifyIcon.Dispose()
+    }
+    exit 0
+}
+
 $grid.Add_SelectionChanged({
     if ($script:isRefreshing) { return }
     if ($grid.SelectedRows.Count -gt 0 -and $null -ne $grid.SelectedRows[0].Tag) {
@@ -1815,28 +2319,57 @@ $clearButton.Add_Click({
     Reset-MonitorWindow
     Refresh-Display
 })
-$loadRangeButton.Add_Click({
-    if ($script:isRefreshing) { return }
+$loadRangeButton.Add_Click({ Invoke-LoadSelectedRange })
+$exportButton.Add_Click({ Invoke-LocalSummaryExport })
+$enterpriseButton.Add_Click({
     try {
-        $loadRangeButton.Enabled = $false
-        $form.UseWaitCursor = $true
-        $historyLabel.Text = 'Loading selected dates...'
-        [System.Windows.Forms.Application]::DoEvents()
-        Set-MonitorDateRange -FromDate $fromPicker.Value -ToDate $toPicker.Value
-        Refresh-Display
-        $explainBox.Text = 'Loaded complete local Codex logs for {0}.' -f (Format-DateRange)
+        Show-EnterpriseAnalyticsDialog
     }
     catch {
-        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to load dates') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to import Workspace Analytics') | Out-Null
+    }
+})
+$script:isApplyingPreset = $false
+$presetBox.Add_SelectedIndexChanged({
+    if ($script:isApplyingPreset -or [string]$presetBox.SelectedItem -eq 'Custom') { return }
+    try {
+        $script:isApplyingPreset = $true
+        $range = Get-DatePresetRange -Preset ([string]$presetBox.SelectedItem)
+        $fromPicker.Value = $range.Start
+        $toPicker.Value = $range.End
     }
     finally {
-        $form.UseWaitCursor = $false
-        $loadRangeButton.Enabled = $true
+        $script:isApplyingPreset = $false
     }
+    Invoke-LoadSelectedRange
+})
+$fromPicker.Add_ValueChanged({
+    if (-not $script:isApplyingPreset) { $presetBox.SelectedItem = 'Custom' }
+})
+$toPicker.Add_ValueChanged({
+    if (-not $script:isApplyingPreset) { $presetBox.SelectedItem = 'Custom' }
 })
 $miniButton.Add_Click({
     Set-MiniMode -Enabled (-not $script:isMiniMode)
     Refresh-Display
+})
+$form.Add_KeyDown({
+    if ($_.Control -and $_.KeyCode -eq [System.Windows.Forms.Keys]::L) {
+        $_.SuppressKeyPress = $true
+        Invoke-LoadSelectedRange
+    }
+    elseif ($_.Control -and $_.KeyCode -eq [System.Windows.Forms.Keys]::E) {
+        $_.SuppressKeyPress = $true
+        Invoke-LocalSummaryExport
+    }
+    elseif ($_.Control -and $_.KeyCode -eq [System.Windows.Forms.Keys]::M) {
+        $_.SuppressKeyPress = $true
+        $miniButton.PerformClick()
+    }
+    elseif ($_.KeyCode -eq [System.Windows.Forms.Keys]::F5) {
+        $_.SuppressKeyPress = $true
+        Refresh-Display
+    }
 })
 
 $timer = New-Object System.Windows.Forms.Timer
@@ -1881,6 +2414,24 @@ if ($UiSmokeTest -or $MiniSmokeTest) {
     }
     else {
         Write-Output 'GUI controls constructed successfully.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CaptureScreenshotPath)) {
+        $captureParent = Split-Path -Parent $CaptureScreenshotPath
+        if ($captureParent -and -not (Test-Path -LiteralPath $captureParent -PathType Container)) {
+            throw "Screenshot folder does not exist: $captureParent"
+        }
+        $form.Show()
+        [System.Windows.Forms.Application]::DoEvents()
+        $bitmap = New-Object System.Drawing.Bitmap($form.ClientSize.Width, $form.ClientSize.Height)
+        try {
+            $form.DrawToBitmap($bitmap, (New-Object System.Drawing.Rectangle(0, 0, $bitmap.Width, $bitmap.Height)))
+            $bitmap.Save($CaptureScreenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+        }
+        finally {
+            $bitmap.Dispose()
+            $form.Hide()
+        }
+        Write-Output "Screenshot captured: $CaptureScreenshotPath"
     }
     $form.Dispose()
     if ($null -ne $script:notifyIcon) {

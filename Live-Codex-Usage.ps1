@@ -23,6 +23,7 @@ param(
     [int]$WarnMinuteTokens = 500000,
     [ValidateRange(1, 100)]
     [int]$ShowEvents = 25,
+    [bool]$IncludeArchivedSessions = $true,
     [switch]$StartFresh,
     [switch]$Once,
     [switch]$Help
@@ -35,10 +36,17 @@ if ($Help) {
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$sessionRoot = Join-Path $CodexHome 'sessions'
+$sessionRoots = [System.Collections.Generic.List[string]]::new()
+foreach ($folderName in @('sessions', 'archived_sessions')) {
+    if ($folderName -eq 'archived_sessions' -and -not $IncludeArchivedSessions) { continue }
+    $candidate = Join-Path $CodexHome $folderName
+    if (Test-Path -LiteralPath $candidate -PathType Container) {
+        $sessionRoots.Add($candidate)
+    }
+}
 
-if (-not (Test-Path -LiteralPath $sessionRoot -PathType Container)) {
-    throw "Codex session-log folder was not found: $sessionRoot"
+if ($sessionRoots.Count -eq 0) {
+    throw "No Codex session-log folder was found under: $CodexHome"
 }
 
 function Get-ValueByName {
@@ -112,6 +120,45 @@ function Format-Tokens {
     return ('{0:N0}' -f $Value)
 }
 
+function ConvertTo-ResetDateTime {
+    param([object]$Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return ([datetime]$Value).ToLocalTime() }
+    if ($Value -is [datetimeoffset]) { return ([datetimeoffset]$Value).LocalDateTime }
+
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    [int64]$epoch = 0
+    if ([int64]::TryParse($text, [ref]$epoch)) {
+        try {
+            if ([Math]::Abs($epoch) -ge 100000000000) {
+                return [datetimeoffset]::FromUnixTimeMilliseconds($epoch).LocalDateTime
+            }
+            return [datetimeoffset]::FromUnixTimeSeconds($epoch).LocalDateTime
+        }
+        catch { return $null }
+    }
+
+    try { return [datetimeoffset]::Parse($text).LocalDateTime } catch { return $null }
+}
+
+function Format-ResetTime {
+    param([object]$Value)
+
+    $resetAt = ConvertTo-ResetDateTime -Value $Value
+    if ($null -eq $resetAt) { return '' }
+    $remaining = $resetAt - (Get-Date)
+    if ($remaining.TotalMinutes -le 0) { return 'reset metadata expired' }
+    if ($remaining.TotalDays -ge 1) {
+        return 'resets in {0}d {1}h' -f [Math]::Floor($remaining.TotalDays), $remaining.Hours
+    }
+    if ($remaining.TotalHours -ge 1) {
+        return 'resets in {0}h {1}m' -f [Math]::Floor($remaining.TotalHours), $remaining.Minutes
+    }
+    return 'resets in {0}m' -f [Math]::Max(1, [Math]::Ceiling($remaining.TotalMinutes))
+}
+
 function Get-LineFingerprint {
     param([string]$Line, [string]$SourceFile = '')
     $hasher = [System.Security.Cryptography.SHA256]::Create()
@@ -137,7 +184,8 @@ function Get-QuotaLine {
         $label = if ($name -eq 'primary') { 'Session' } else { 'Weekly' }
         if ($null -ne $used) {
             $part = '{0}: {1:N0}%' -f $label, ([double]$used)
-            if ($reset) { $part += " (reset $reset)" }
+            $resetText = Format-ResetTime -Value $reset
+            if ($resetText) { $part += " ($resetText)" }
             $parts.Add($part)
         }
     }
@@ -156,11 +204,13 @@ function Get-QuotaLine {
 function Get-SessionLogFiles {
     # Use .NET enumeration rather than Get-ChildItem. In this managed profile,
     # the PowerShell provider does not enumerate these hidden session files.
-    [System.IO.Directory]::EnumerateFiles(
-        $sessionRoot,
-        '*.jsonl',
-        [System.IO.SearchOption]::AllDirectories
-    ) | ForEach-Object { [System.IO.FileInfo]$_ }
+    foreach ($root in $sessionRoots) {
+        [System.IO.Directory]::EnumerateFiles(
+            $root,
+            '*.jsonl',
+            [System.IO.SearchOption]::AllDirectories
+        ) | ForEach-Object { [System.IO.FileInfo]$_ }
+    }
 }
 
 $seen = @{}

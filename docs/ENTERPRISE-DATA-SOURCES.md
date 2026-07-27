@@ -1,8 +1,8 @@
 # Enterprise data-source roadmap
 
-## Recommendation
+## Implemented recommendation
 
-Keep the current Windows monitor as a local, read-only Codex view. Add enterprise-wide ChatGPT reporting as a separate, centrally managed data source rather than attempting to inspect browser traffic, Office documents, prompts, or keystrokes on each workstation.
+Keep the Windows monitor as an offline Codex view. Enterprise-wide ChatGPT reporting is a separate, explicit import surface rather than an attempt to inspect browser traffic, Office documents, prompts, or keystrokes on each workstation.
 
 This separation preserves the useful real-time Codex experience while avoiding fragile client instrumentation and unnecessary exposure of employee or customer content.
 
@@ -18,6 +18,8 @@ Use this source for:
 - per-user aggregate reporting where policy permits;
 - app, tool, project, model-family, and skill usage;
 - monthly and weekly management reports.
+
+Version 2 implements the user-report CSV boundary. Click **Enterprise** in the dashboard and select the approved CSV. The importer recognizes the documented message, GPT, tool, project, model-map, tool-map, seat-type, department, period, and activity fields. Direct user identifiers are used only in memory for distinct counts and are not returned to the UI.
 
 Official reference: [Workspace analytics for ChatGPT Enterprise and Edu](https://help.openai.com/en/articles/10875114-user-analytics-for-chatgpt-enterprise-and-edu)
 
@@ -62,10 +64,16 @@ The central collector should:
 
 ## Product phases
 
-1. Current release: accurate local Codex monitoring, arbitrary local date ranges, privacy-safe labels, and deterministic Windows tests.
-2. Import release: read Workspace Analytics CSV exports into an enterprise dashboard without requiring API credentials in the desktop application.
-3. Managed service: central Compliance Logs ingestion with surface detection for web, desktop, Excel, PowerPoint, and other supported ChatGPT clients.
-4. Enterprise client: replace the PowerShell UI with a signed .NET desktop application only if centralized deployment, auto-update, accessibility certification, and IT support justify the migration.
+1. **Complete:** accurate local Codex monitoring, active/archived history, arbitrary local date ranges, privacy-safe labels and exports, and deterministic Windows tests.
+2. **Complete:** Workspace Analytics CSV import into an aggregate-only enterprise dashboard without API credentials in the desktop application.
+3. **Boundary complete; service organization-specific:** the repository includes a mapping-driven offline Compliance JSONL normalizer. A live central collector still requires the organization’s current authenticated schema, least-privilege service identity, secret manager, checkpoint store, retention policy, and approved event allowlist.
+4. **Future decision:** replace the PowerShell UI with a signed .NET desktop application only if centralized deployment, auto-update, accessibility certification, and IT support justify the migration.
+
+## Current public-platform constraint
+
+The public Compliance Platform guidance describes the intended logging/compliance use and 30-day source retention, but the current API endpoint schema is available to authenticated Enterprise/Edu customers. The legacy conversation-log route was retired in 2026. This project therefore does not guess a route or ship stale endpoint code.
+
+See [Compliance export normalizer](COMPLIANCE-NORMALIZER.md) for the implemented schema boundary.
 
 ## Non-goals
 
