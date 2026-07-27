@@ -1,0 +1,13 @@
+# This repository intentionally contains only the shareable monitor source.
+# Local Codex logs and any generated telemetry must never be committed.
+*
+!.gitignore
+!Live-Codex-Usage-GUI.ps1
+!Live-Codex-Usage.ps1
+!README.md
+!Start-Live-Codex-Usage.cmd
+!Start-Live-Codex-Usage.ps1
+!Start-Live-Codex-Usage-Mini.cmd
+!Start-Live-Codex-Usage-Mini.ps1
+!Test-Live-Codex-Usage.cmd
+!Test-Live-Codex-Usage.ps1
