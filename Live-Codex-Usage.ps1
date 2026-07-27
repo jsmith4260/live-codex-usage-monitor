@@ -99,6 +99,7 @@ function Get-UsageEvent {
         Output    = Get-Number $usage.output_tokens
         Reasoning = Get-Number $usage.reasoning_output_tokens
         Total     = Get-Number $usage.total_tokens
+        Fresh     = [Math]::Max([int64]0, ((Get-Number $usage.input_tokens) - (Get-Number $usage.cached_input_tokens))) + (Get-Number $usage.output_tokens)
         RateLimits = $record.payload.rate_limits
         Source    = $SourceFile
     }
@@ -112,10 +113,10 @@ function Format-Tokens {
 }
 
 function Get-LineFingerprint {
-    param([string]$Line)
+    param([string]$Line, [string]$SourceFile = '')
     $hasher = [System.Security.Cryptography.SHA256]::Create()
     try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Line)
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($SourceFile + [char]0 + $Line)
         return [Convert]::ToBase64String($hasher.ComputeHash($bytes))
     }
     finally {
@@ -164,14 +165,14 @@ function Get-SessionLogFiles {
 
 $seen = @{}
 $events = [System.Collections.Generic.List[object]]::new()
-$latestQuota = $null
 $start = Get-Date
 
 if ($StartFresh) {
     Get-SessionLogFiles |
         ForEach-Object {
-            Get-Content -LiteralPath $_.FullName -Tail 100 -ErrorAction SilentlyContinue | ForEach-Object {
-                $seen[(Get-LineFingerprint $_)] = $true
+            $sessionFile = $_.FullName
+            Get-Content -LiteralPath $sessionFile -Tail 100 -ErrorAction SilentlyContinue | ForEach-Object {
+                $seen[(Get-LineFingerprint -Line $_ -SourceFile $sessionFile)] = $true
             }
         }
 }
@@ -189,13 +190,13 @@ while ($true) {
         Get-Content -LiteralPath $file.FullName -Tail 150 -ErrorAction SilentlyContinue | ForEach-Object {
             $line = $_
             if ($line -notmatch 'token_count') { return }
-            $hash = Get-LineFingerprint $line
+            $hash = Get-LineFingerprint -Line $line -SourceFile $file.FullName
             if ($seen.ContainsKey($hash)) { return }
             $seen[$hash] = $true
-            $event = Get-UsageEvent -Line $line -SourceFile $file.FullName
-            if ($null -ne $event) {
-                $events.Add($event)
-                if ($null -ne $event.RateLimits) { $latestQuota = $event.RateLimits }
+            $usageEvent = Get-UsageEvent -Line $line -SourceFile $file.FullName
+            if ($null -ne $usageEvent) {
+                $usageEvent | Add-Member -NotePropertyName EventId -NotePropertyValue $hash
+                $events.Add($usageEvent)
             }
         }
     }
@@ -206,8 +207,10 @@ while ($true) {
     $recent = @($events | Where-Object { $_.At -ge $minuteCutoff -and $_.Kind -eq 'turn' })
     $allTurns = @($events | Where-Object { $_.Kind -eq 'turn' })
     $last = if ($allTurns.Count -gt 0) { @($allTurns | Sort-Object At)[-1] } else { $null }
-    $minuteMeasure = $recent | Measure-Object -Property Total -Sum
-    $runningMeasure = $allTurns | Measure-Object -Property Total -Sum
+    $quotaEvent = @($events | Where-Object { $null -ne $_.RateLimits } | Sort-Object At -Descending | Select-Object -First 1)
+    $latestQuota = if ($quotaEvent.Count -gt 0) { $quotaEvent[0].RateLimits } else { $null }
+    $minuteMeasure = $recent | Measure-Object -Property Fresh -Sum
+    $runningMeasure = $allTurns | Measure-Object -Property Fresh -Sum
     $minuteTotal = if ($null -eq $minuteMeasure -or $null -eq $minuteMeasure.Sum) { [int64]0 } else { [int64]$minuteMeasure.Sum }
     $runningTotal = if ($null -eq $runningMeasure -or $null -eq $runningMeasure.Sum) { [int64]0 } else { [int64]$runningMeasure.Sum }
 
@@ -218,14 +221,14 @@ while ($true) {
     if ($null -eq $last) {
         Write-Host 'Waiting for the next completed Codex turn with a token_count event...' -ForegroundColor Yellow
     } else {
-        $turnColor = if ($last.Total -ge $WarnTurnTokens) { 'Red' } else { 'Green' }
+        $turnColor = if ($last.Fresh -ge $WarnTurnTokens) { 'Red' } else { 'Green' }
         $newInput = [Math]::Max([int64]0, ($last.Input - $last.Cached))
-        Write-Host ("Latest turn ({0}, {1}): {2}" -f $last.At.ToString('HH:mm:ss'), $last.Kind, (Format-Tokens $last.Total)) -ForegroundColor $turnColor
-        Write-Host ("  Input {0} | Cached subset {1} | New input {2} | Output {3} | Reasoning {4}" -f (Format-Tokens $last.Input), (Format-Tokens $last.Cached), (Format-Tokens $newInput), (Format-Tokens $last.Output), (Format-Tokens $last.Reasoning))
-        Write-Host ("Observed in monitor window: {0}" -f (Format-Tokens $runningTotal))
+        Write-Host ("Latest turn ({0}, {1}): fresh {2} | context {3}" -f $last.At.ToString('HH:mm:ss'), $last.Kind, (Format-Tokens $last.Fresh), (Format-Tokens $last.Total)) -ForegroundColor $turnColor
+        Write-Host ("  Input {0} | Cached subset {1} | New input {2} | Output {3} | Reasoning subset {4}" -f (Format-Tokens $last.Input), (Format-Tokens $last.Cached), (Format-Tokens $newInput), (Format-Tokens $last.Output), (Format-Tokens $last.Reasoning))
+        Write-Host ("Observed fresh usage in monitor window: {0}" -f (Format-Tokens $runningTotal))
         $minuteColor = if ($minuteTotal -ge $WarnMinuteTokens) { 'Red' } else { 'Green' }
         Write-Host ("Last 60 seconds: {0}" -f (Format-Tokens $minuteTotal)) -ForegroundColor $minuteColor
-        if ($last.Total -ge $WarnTurnTokens -or $minuteTotal -ge $WarnMinuteTokens) {
+        if ($last.Fresh -ge $WarnTurnTokens -or $minuteTotal -ge $WarnMinuteTokens) {
             Write-Host 'WARNING: Token burn threshold exceeded. Pause before sending more large-context work.' -ForegroundColor Red
         }
     }
@@ -235,14 +238,17 @@ while ($true) {
         $newInput = [Math]::Max([int64]0, ($_.Input - $_.Cached))
         $file = Split-Path -Leaf $_.Source
         $source = if ($file.Length -gt 28) { $file.Substring(0, 28) + '...' } else { $file }
-        Write-Host ("  {0} | total {1} | in {2} (cached {3}, new {4}) | out {5} | {6}" -f $_.At.ToString('HH:mm:ss'), (Format-Tokens $_.Total), (Format-Tokens $_.Input), (Format-Tokens $_.Cached), (Format-Tokens $newInput), (Format-Tokens $_.Output), $source)
+        Write-Host ("  {0} | fresh {1} | context {2} | in {3} (cached {4}, new {5}) | out {6} | {7}" -f $_.At.ToString('HH:mm:ss'), (Format-Tokens $_.Fresh), (Format-Tokens $_.Total), (Format-Tokens $_.Input), (Format-Tokens $_.Cached), (Format-Tokens $newInput), (Format-Tokens $_.Output), $source)
     }
     Write-Host ''
     Write-Host (Get-QuotaLine -RateLimits $latestQuota) -ForegroundColor Magenta
     Write-Host 'Note: cached input is a subset of input, not an additional amount. This is local telemetry, not an OpenAI invoice.' -ForegroundColor DarkGray
 
     # Keep dedup state bounded during long-running use.
-    if ($seen.Count -gt 10000) { $seen = @{} }
+    if ($seen.Count -gt 10000) {
+        $seen = @{}
+        foreach ($usageEvent in $events) { $seen[$usageEvent.EventId] = $true }
+    }
     if ($Once) { break }
     Start-Sleep -Seconds $PollSeconds
 }

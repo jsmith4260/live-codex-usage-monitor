@@ -1,0 +1,24 @@
+# Local Codex data and generated telemetry
+.codex/
+sessions/
+*.jsonl
+!tests/fixtures/**/*.jsonl
+*.log
+*.csv
+*.sqlite
+*.db
+
+# Local review and build artifacts
+artifacts/
+TestResults/
+bin/
+obj/
+.vs/
+*.user
+
+# Secrets and local configuration
+*.key
+*.pem
+*.pfx
+*.secrets.json
+appsettings.Local.json
