@@ -5,6 +5,7 @@
 ![Windows](https://img.shields.io/badge/platform-Windows-0078d4)
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391fe)
 ![Local only](https://img.shields.io/badge/privacy-local--only-22c55e)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **A local-only Windows Codex usage monitor, token tracker, quota dashboard, and
 usage-efficiency companion.** It turns the Codex logs already on your computer
@@ -273,3 +274,8 @@ Bug reports, feature ideas, accessibility feedback, and Windows compatibility
 reports are welcome in [GitHub Issues](https://github.com/jsmith4260/live-codex-usage-monitor/issues).
 Please do not attach personal Codex logs, prompts, responses, account exports, or
 other sensitive data to an issue.
+
+## License
+
+Live Codex Usage Monitor is open-source software available under the
+[MIT License](LICENSE).

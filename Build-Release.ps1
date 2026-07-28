@@ -107,6 +107,7 @@ $releaseItems = @(
     'Test-ZeroOutbound.ps1',
     'Invoke-StaticAnalysis.ps1',
     'README.md',
+    'LICENSE',
     'SECURITY.md',
     'CHANGELOG.md',
     'VERSION',
