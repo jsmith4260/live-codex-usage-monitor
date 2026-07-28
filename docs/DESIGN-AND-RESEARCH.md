@@ -26,6 +26,25 @@ Comparable projects that informed these patterns:
 - [codex-hud](https://github.com/Jiawang1209/codex-hud): passive context, tool, and plan status without transcript display.
 - [agenttop](https://github.com/vicarious11/agenttop): model/project/cache breakdowns and activity exploration.
 - [tokentop](https://github.com/tokentopapp/tokentop): burn-rate, historical trends, efficiency metrics, and budget-oriented usage views.
+- [ccstatus](https://github.com/moond4rk/ccstatus): independent status widgets, quota bars, schema-aware parsing, configuration validation, and dense-but-readable local status presentation.
+
+## Usage-saver research adopted in 3.3
+
+- Keep prompt-cache benefit separate from fresh input and calculate only the full-rate versus cached-rate difference supported by the local counters and dated bundled rate card.
+- Treat repeated context as a measurable break-even problem rather than automatically starting or compacting a task.
+- Keep injected efficiency instructions short and stable so the policy does not undermine the caching it is intended to protect.
+- Preview and allowlist Codex configuration changes; preserve the selected model, automatic compaction, unknown TOML sections, providers, and tool definitions.
+- Count tool-surface breadth without displaying or persisting server/tool names.
+- Detect parser/schema drift locally and retain only compatibility counters.
+
+Official sources that informed these boundaries:
+
+- [OpenAI prompt caching](https://openai.com/index/api-prompt-caching/)
+- [Codex model-visible context guidance](https://github.com/openai/codex/blob/main/AGENTS.md#model-visible-context)
+- [Codex configuration schema](https://github.com/openai/codex/blob/main/codex-rs/core/config.schema.json)
+- [OpenAI latest-model guidance](https://developers.openai.com/api/docs/guides/latest-model)
+
+Third-party prompt proxies and repository bundlers were not adopted because several persist raw prompts/tool output, cache source material, add a local service, default to usage reporting, or write repository-content bundles. The native implementation keeps the monitor's no-content, no-network, and no-paid-activity boundary auditable in PowerShell.
 
 ## Ideas deliberately not adopted
 

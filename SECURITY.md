@@ -13,6 +13,7 @@ Live Codex Usage Monitor is designed to read local Codex session logs and person
 - Repository rules exclude local JSONL session logs, generated telemetry, databases, and common secret-file formats.
 - Persistent history contains aggregate dates/counters only. Guard and cost settings contain local numeric parameters and exact executable paths, never credentials.
 - Optional RTK checks invoke only the configured local executable, force `RTK_TELEMETRY_DISABLED=1`, and read aggregate history/failure counters. The monitor does not persist command text, arguments, or RTK history.
+- Saver results contain aggregate counters and allowlisted setting labels only. Schema observations, cache calculations, compaction health, fresh-task advice, and tool-surface audit results exclude raw log content, session identifiers, server/tool names, commands, arguments, and paths.
 
 ## Usage guard boundary
 
@@ -23,6 +24,12 @@ The Control Center distinguishes `OFF`, `ADVISORY`, `ARMED (ENFORCED)`, `GRACE`,
 ## RTK boundary
 
 RTK is optional and is not downloaded or updated by the monitor. Its reported "tokens saved" are approximate shell-output tokens derived from byte counts, not OpenAI-billed tokens, ChatGPT quota, or money. `Possible bypass` means recent local shell activity is newer than the RTK database; `Degraded` means RTK reported parse failures/fallbacks; `Working - no savings` means RTK tracked commands but did not reduce their output.
+
+## Efficiency configuration boundary
+
+Saver/Balanced/Quality profiles change only `model_reasoning_effort` and `model_verbosity`, after preview and affirmative confirmation. Safe repair normalizes only duplicate or invalid allowlisted efficiency keys. Model selection, automatic compaction, credentials, MCP/server definitions, features, providers, and unknown TOML sections are preserved.
+
+The rollback file contains only prior presence/value metadata for the three allowlisted efficiency keys; the full Codex configuration is never copied into monitor state or a personal backup. The optional output-budget policy modifies only one exact marked block in the current user's Codex instructions, requires affirmative installation/removal, and refuses unbalanced markers.
 
 ## Cost and downloaded-data boundary
 

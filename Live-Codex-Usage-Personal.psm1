@@ -315,6 +315,9 @@ function Get-PersonalMonitorDiagnostics {
         [Parameter(Mandatory = $true)][object]$RtkSnapshot,
         [Parameter(Mandatory = $true)][object]$GuardReadiness,
         [Parameter(Mandatory = $true)][object]$StartupRegistration,
+        [object]$EfficiencyConfigState = $null,
+        [object]$EfficiencyPolicyState = $null,
+        [object]$SchemaHealth = $null,
         [bool]$PersistenceEnabled = $true,
         [string]$AppVersion = ''
     )
@@ -364,6 +367,27 @@ function Get-PersonalMonitorDiagnostics {
         Status = $(if ([bool]$StartupRegistration.MatchesLauncher) { 'OK' } elseif ([bool]$StartupRegistration.Registered) { 'Warning' } else { 'Off' })
         Detail = $(if ([bool]$StartupRegistration.MatchesLauncher) { 'Enabled for this Windows account.' } elseif ([bool]$StartupRegistration.Registered) { 'Startup entry exists but needs repair.' } else { 'Not enabled; this is optional unless enforced guard continuity is wanted.' })
     })
+    if ($null -ne $EfficiencyConfigState) {
+        $rows.Add([pscustomobject]@{
+            Check = 'Efficiency configuration'
+            Status = $(if ([string]$EfficiencyConfigState.StatusCode -eq 'NeedsRepair') { 'Warning' } else { 'OK' })
+            Detail = [string]$EfficiencyConfigState.StatusLabel
+        })
+    }
+    if ($null -ne $EfficiencyPolicyState) {
+        $rows.Add([pscustomobject]@{
+            Check = 'Output-budget policy'
+            Status = $(if ([string]$EfficiencyPolicyState.StatusCode -eq 'NeedsRepair') { 'Warning' } elseif ([bool]$EfficiencyPolicyState.Installed) { 'OK' } else { 'Off' })
+            Detail = [string]$EfficiencyPolicyState.StatusLabel
+        })
+    }
+    if ($null -ne $SchemaHealth) {
+        $rows.Add([pscustomobject]@{
+            Check = 'Codex log schema'
+            Status = $(if ([string]$SchemaHealth.StatusCode -eq 'Healthy') { 'OK' } elseif ([string]$SchemaHealth.StatusCode -eq 'NoData') { 'Ready' } else { 'Warning' })
+            Detail = [string]$SchemaHealth.Detail
+        })
+    }
     $rows.Add([pscustomobject]@{
         Check = 'Privacy and cost'
         Status = 'OK'

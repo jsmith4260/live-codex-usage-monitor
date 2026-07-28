@@ -1,6 +1,6 @@
 # Live Codex Usage Monitor
 
-An offline, single-user Windows dashboard for understanding your own local Codex usage, estimates, task activity, and optional RTK command-output savings. It reads data already stored on your workstation, then presents fresh token burn, replayed context, active tasks, quota windows, local tool activity, RTK health, trends, dated credit estimates, downloaded-report comparison, personal reliability settings, and an opt-in usage guard.
+An offline, single-user Windows dashboard for understanding and reducing your own local Codex usage. It reads data already stored on your workstation, then presents fresh token burn, replayed context, independent quota windows, prompt-cache efficiency, fresh-task break-even advice, schema and compaction health, local tool activity, RTK savings, trends, dated credit estimates, reversible efficiency profiles, downloaded-report comparison, personal reliability settings, and an opt-in usage guard.
 
 ## Purpose
 
@@ -19,6 +19,8 @@ Use this monitor to understand the shape of local Codex work without creating mo
 - Monitoring itself creates no ChatGPT messages, turns, tokens, credits, API requests, overages, agent activity, or other paid usage.
 - Its automatic live input is your existing local Codex JSONL. Downloaded usage summaries and activity exports enter only through explicit local-file workflows and must be limited to one individual.
 - Optional RTK diagnostics read only RTK's local aggregate savings/history output. The monitor forces `RTK_TELEMETRY_DISABLED=1` for every RTK child process.
+- The Saver workspace reads only aggregate counters and allowlisted Codex configuration keys. It never persists a full `config.toml`, tool/server name, command, argument, or raw log line.
+- Efficiency profiles, safe configuration repair, rollback, and the optional output-budget policy require affirmative in-app actions. None is silently enabled.
 - Prompt-derived task names are disabled by default. Tasks use timestamp/session labels unless the optional `-ShowPromptTaskTitles` switch is supplied.
 - Prompts, responses, tool arguments, tool output, credentials, client data, and working-directory paths are not persisted or transmitted.
 - Local CSV output contains daily counts and token totals only. It excludes task names, session IDs, source paths, prompts, responses, and tool data.
@@ -88,6 +90,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 - Privacy-safe timestamp/session task names by default. Prompt-derived display names are an explicit opt-in and remain in memory only.
 - Integration/tool activity counts by local shell, file edits, web, MCP/app/plugin names, waits, and plan updates.
 - Optional RTK aggregate shell-output savings, daily reduction estimates, freshness, parser failures, and possible-prefix-bypass warnings.
+- Prompt-cache hit rate and calculated full-rate credit/API-equivalent differences, kept separate from RTK's estimated shell-output savings.
+- Fresh-task break-even advice, local compaction-churn detection, and versioned aggregate schema-drift detection.
+- Independent short- and long-window quota meters with reset and pace text when local logs provide the fields.
 - OK/WARN/CRITICAL status, a matching color meter, quota reset countdowns, and an even-pace comparison when the log supplies a window duration.
 - Privacy-safe daily CSV export through **Export CSV**.
 - A system-tray menu with dashboard, mini-mode, Control Center, and exit actions.
@@ -98,6 +103,7 @@ Open **Control center** or press `Ctrl+I`.
 
 - **Trends**: daily fresh-token history, a trailing observed-day forecast, and a text table matching the chart.
 - **Heatmap**: local day/hour activity with both text and an accessible color-intensity cue.
+- **Saver**: independent quota meters, cache efficiency, fresh-task break-even advice, compaction/schema health, aggregate tool-surface review, removable output-budget policy, and previewable reversible Codex efficiency profiles.
 - **RTK health**: local-only command-output reduction estimates, daily history, freshness, parser/fallback failures, and possible bypass status.
 - **Cost**: official credit estimates for known models, API-equivalent USD only where a current official API rate is published, and optional contract parameters for a configured cash estimate.
 - **Compare**: local daily credit estimates versus a downloaded personal CSV/JSON, with variance, coverage, and freshness labels.
@@ -111,6 +117,7 @@ Downloaded reporting is not real-time. Workspace Analytics normally refreshes in
 
 See [offline cost, reconciliation, and guard details](docs/OFFLINE-COST-RECONCILIATION-GUARD.md).
 See [RTK savings and health](docs/RTK-SAVINGS-AND-HEALTH.md) for exact measurement and failure-state semantics.
+See [Usage Saver and efficiency](docs/USAGE-SAVER-AND-EFFICIENCY.md) for savings labels, profiles, schema checks, the local policy, and rollback boundaries.
 
 ## Reading the dashboard
 
@@ -165,6 +172,8 @@ The result contains date, surface, event type, model, event count, and unique-us
 - It does not persist or send prompts, responses, tool arguments, tool output, credentials, client data, or working-directory paths. Prompt-derived task names are disabled by default; if explicitly enabled, they remain only in memory while the dashboard is open.
 - It does not claim estimates are an OpenAI invoice or account balance.
 - It does not claim RTK's byte-derived shell-output estimate is a billed-token count, quota reduction, or cash saving.
+- It does not combine RTK estimates, calculated cache benefits, or optimization opportunities into a misleading total.
+- It does not apply an efficiency profile, repair configuration, change automatic compaction, or install an output policy without an affirmative click.
 - It does not silently price unknown models or assign an actual cash value to a credit.
 - It does not implement a live account or activity API collector, accept account credentials, or bypass product reporting controls.
 - It does not inspect browser cookies/history, Office documents, prompts, keystrokes, TLS traffic, or private account endpoints.
@@ -184,12 +193,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -TaskSmokeTest
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -DateRangeSmokeTest
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -StatusSmokeTest
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -EfficiencySmokeTest
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -AlertSmokeTest
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -InsightsUiSmokeTest -DisablePersistence
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Test-ZeroOutbound.ps1
 ```
 
-The test wrapper uses deterministic local fixtures, checks child exit codes, verifies fresh-token semantics, exercises date ranges and archived logs, validates both quota windows, constructs all UI surfaces, tests RTK health with a fake local runner, tests pricing/reconciliation/persistence/guard logic with fake processes, and proves that aggregate outputs do not expose fixture prompt text or direct identifiers.
+The test wrapper uses deterministic local fixtures, checks child exit codes, verifies fresh-token semantics, exercises date ranges and archived logs, validates both quota windows, constructs all UI surfaces, tests cache/advisor/schema/compaction logic, tests profile preview/apply/repair/rollback and policy install/remove in temporary files, tests RTK health with a fake local runner, tests pricing/reconciliation/persistence/guard logic with fake processes, and proves that aggregate outputs do not expose fixture prompt text or direct identifiers.
 
 ## Build a release
 

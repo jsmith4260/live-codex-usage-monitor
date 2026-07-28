@@ -12,6 +12,7 @@ function Get-MonitorPrivacyContract {
         LocalInputs = @(
             'Existing Codex JSONL logs',
             'Local RTK aggregate savings and health counters',
+            'Allowlisted local Codex efficiency settings and managed-policy status',
             'User-selected local personal usage summaries',
             'User-selected local personal activity exports',
             'User-selected local downloaded usage reports'
@@ -21,10 +22,12 @@ function Get-MonitorPrivacyContract {
             'Response text',
             'Tool arguments or output',
             'Credentials or cookies',
+            'Full Codex configuration or unknown configuration values',
+            'Tool or server names from the configuration audit',
             'Email addresses or account IDs',
             'Session names or source paths'
         )
-        PersistentDataClass = 'Aggregate counters, dates, model labels, and provenance only'
+        PersistentDataClass = 'Aggregate counters, dates, model labels, provenance, and allowlisted local settings only'
         UserPromise = 'Monitoring itself creates no ChatGPT turns, tokens, credits, API calls, or other paid usage.'
     }
 }
@@ -68,6 +71,7 @@ function Get-MonitorStatePaths {
         GuardPolicy = Join-Path $resolvedRoot 'guard-policy-v1.json'
         CostProfile = Join-Path $resolvedRoot 'cost-profile-v1.json'
         PersonalSettings = Join-Path $resolvedRoot 'personal-settings-v1.json'
+        CodexEfficiencyRollback = Join-Path $resolvedRoot 'codex-efficiency-rollback-v1.json'
         Backups = Join-Path $resolvedRoot 'backups'
         Diagnostics = Join-Path $resolvedRoot 'diagnostics'
         OfficialReports = Join-Path $resolvedRoot 'official-reports'

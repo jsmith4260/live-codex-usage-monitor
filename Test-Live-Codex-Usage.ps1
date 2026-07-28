@@ -11,6 +11,7 @@ $complianceConverter = Join-Path $scriptDir 'Convert-Enterprise-ComplianceExport
 $complianceModule = Join-Path $scriptDir 'Live-Codex-Usage-Compliance.psm1'
 $enterpriseModule = Join-Path $scriptDir 'Live-Codex-Usage-Enterprise.psm1'
 $costModule = Join-Path $scriptDir 'Live-Codex-Usage-Cost.psm1'
+$efficiencyModule = Join-Path $scriptDir 'Live-Codex-Usage-Efficiency.psm1'
 $rateCardPath = Join-Path $scriptDir 'config\usage-rates.json'
 $reconciliationModule = Join-Path $scriptDir 'Live-Codex-Usage-Reconciliation.psm1'
 $officialFixture = Join-Path $scriptDir 'tests\fixtures\official-usage-snapshot.csv'
@@ -75,6 +76,8 @@ Invoke-MonitorTest -Name 'Expanded date-range catalog reload' -Arguments @(
 ) -ExpectedPattern 'InitialEvents=2; ExpandedEvents=3; CatalogStart=2026-07-25'
 Invoke-MonitorTest -Name 'Combined status and quota windows' -Arguments @('-StatusSmokeTest') -ExpectedPattern 'QuotaPercent=95; Status=CRITICAL'
 Invoke-MonitorTest -Name 'Quota reset countdown and pace' -Arguments @('-QuotaResetSmokeTest') -ExpectedPattern 'resets in .*below even pace'
+Invoke-MonitorTest -Name 'Usage saver integration' -Arguments @('-EfficiencySmokeTest') `
+    -ExpectedPattern 'Cache=68.6%; Schema=Healthy; QuotaWindows=2; Advice=Continue; Compactions=0'
 Invoke-MonitorTest -Name 'Startup alert freshness' -Arguments @('-AlertSmokeTest') -ExpectedPattern 'StaleAlert=False; ActiveAlert=True'
 Invoke-MonitorTest -Name 'Enterprise analytics import' -Arguments @('-EnterpriseSmokeTest', '-EnterpriseCsvPath', $analyticsFixture) -ExpectedPattern 'Rows=2; ActiveUsers=2; Messages=150; ToolMessages=40; SeatTypes=2' -RejectedPattern 'Alice|Bob|example\.invalid|secret'
 Invoke-MonitorTest -Name 'Personal usage dialog construction' -Arguments @('-EnterpriseUiSmokeTest', '-EnterpriseCsvPath', $personalAnalyticsFixture) -ExpectedPattern 'Personal usage dialog constructed successfully; Tabs=3'
@@ -84,7 +87,7 @@ Invoke-MonitorTest -Name 'Compliance dialog construction' -Arguments @(
 ) -ExpectedPattern 'Compliance dialog constructed successfully; Tabs=4; Rows=2'
 Invoke-MonitorTest -Name 'Control center construction' -Arguments @(
     '-InsightsUiSmokeTest', '-OfficialSnapshotPath', $officialFixture
-) -ExpectedPattern 'Control center constructed successfully; Tabs=8; TrendRows=2; Models=2'
+) -ExpectedPattern 'Control center constructed successfully; Tabs=9; TrendRows=2; Models=2'
 
 Write-Host '  Offline rate-card estimates'
 Import-Module -Name $costModule -Force
@@ -100,6 +103,169 @@ $unknownCost = Get-TokenCostEstimate -RateCard $rateCard -Model 'unpublished-mod
 if ($unknownCost.Priced -or $unknownCost.EstimatedCredits -ne 0 -or $null -ne $unknownCost.ApiEquivalentUsd -or
     $unknownCost.Note -notmatch 'no default was guessed') {
     throw 'Unknown-model pricing must stay explicitly unpriced.'
+}
+
+Write-Host '  Usage saver calculations, schema drift, profiles, policy, and rollback'
+Import-Module -Name $efficiencyModule -Force
+Import-Module -Name $privacyModule -Force
+$efficiencyUsage = @(
+    [pscustomobject]@{
+        At = [datetime]'2026-07-27T10:00:00'; Session = 'private-a'; Model = 'gpt-5.6-sol'
+        Input = 10000; NewInput = 1000; Cached = 9000; Output = 200; Total = 10200
+    },
+    [pscustomobject]@{
+        At = [datetime]'2026-07-27T10:05:00'; Session = 'private-a'; Model = 'gpt-5.6-sol'
+        Input = 140000; NewInput = 5000; Cached = 135000; Output = 300; Total = 140300
+    },
+    [pscustomobject]@{
+        At = [datetime]'2026-07-27T10:10:00'; Session = 'private-a'; Model = 'gpt-5.6-sol'
+        Input = 150000; NewInput = 6000; Cached = 144000; Output = 350; Total = 150350
+    },
+    [pscustomobject]@{
+        At = [datetime]'2026-07-27T10:15:00'; Session = 'private-a'; Model = 'gpt-5.6-sol'
+        Input = 160000; NewInput = 7000; Cached = 153000; Output = 400; Total = 160400
+    }
+)
+$cacheSavings = Get-PromptCacheSavings -RateCard $rateCard -UsageEvents $efficiencyUsage
+if ($cacheSavings.CacheHitPercent -lt 90 -or $cacheSavings.CalculatedCreditsAvoided -le 0 -or
+    $cacheSavings.SavingsClass -notmatch '^Calculated') {
+    throw 'Prompt-cache savings classification or calculation is incorrect.'
+}
+$freshAdvice = Get-SessionEfficiencyAdvice -UsageEvents $efficiencyUsage -BloatedContextTokens 100000
+if ($freshAdvice.StatusCode -ne 'FreshTaskOpportunity' -or $freshAdvice.BreakEvenFutureTurns -gt 4 -or
+    $freshAdvice.ExcessReplayTokensPerFutureTurn -le 0) {
+    throw 'Fresh-task break-even advice is incorrect.'
+}
+$schemaTracker = New-CodexSchemaTracker
+$validTokenLine = '{"timestamp":"2026-07-27T10:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":5,"output_tokens":2,"total_tokens":12}}}}'
+Add-CodexSchemaObservation -Tracker $schemaTracker -Line $validTokenLine
+$healthySchema = Get-CodexSchemaHealth -Tracker $schemaTracker
+if ($healthySchema.StatusCode -ne 'Healthy' -or $healthySchema.CompatibilityPercent -ne 100) {
+    throw 'Known Codex log schema was not classified as healthy.'
+}
+$driftTokenLine = '{"timestamp":"2026-07-27T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10}}}}'
+Add-CodexSchemaObservation -Tracker $schemaTracker -Line $driftTokenLine
+$driftSchema = Get-CodexSchemaHealth -Tracker $schemaTracker
+if ($driftSchema.StatusCode -ne 'Drift' -or $driftSchema.TokenShapeMismatches -ne 1) {
+    throw 'Token schema drift was not detected.'
+}
+$quotaReset = [datetimeoffset](Get-Date).AddHours(2)
+$quotaRows = @(Get-QuotaWindowMetrics -RateLimits ([pscustomobject]@{
+    primary = [pscustomobject]@{ used_percent = 25; reset_at = $quotaReset.ToUnixTimeSeconds(); window_minutes = 300 }
+    secondary = [pscustomobject]@{ used_percent = 70; reset_at = $quotaReset.AddDays(5).ToUnixTimeSeconds(); window_minutes = 10080 }
+}))
+if ($quotaRows.Count -ne 2 -or -not $quotaRows[0].Available -or -not $quotaRows[1].Available -or
+    $quotaRows[0].UsedPercent -ne 25 -or $quotaRows[1].UsedPercent -ne 70) {
+    throw 'Independent quota-window metrics are incorrect.'
+}
+$compactionUsage = @(
+    [pscustomobject]@{ At = [datetime]'2026-07-27T11:00:00'; Session = 'private-b'; Input = 100000; NewInput = 5000 },
+    [pscustomobject]@{ At = [datetime]'2026-07-27T11:02:00'; Session = 'private-b'; Input = 40000; NewInput = 4000 }
+)
+$compactionActivity = @(
+    [pscustomobject]@{ At = [datetime]'2026-07-27T11:01:00'; Session = 'private-b'; Label = 'COMPACT' }
+)
+$compaction = Get-CompactionChurn -UsageEvents $compactionUsage -ActivityEvents $compactionActivity
+if ($compaction.Compactions -ne 1 -or $compaction.PairedCompactions -ne 1 -or
+    $compaction.AverageContextReductionPercent -ne 60) {
+    throw 'Compaction churn pairing or reduction calculation is incorrect.'
+}
+
+$efficiencyTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('live-codex-efficiency-{0}' -f [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory -Path $efficiencyTestRoot)
+try {
+    $configPath = Join-Path $efficiencyTestRoot 'config.toml'
+    $rollbackPath = Join-Path $efficiencyTestRoot 'rollback.json'
+    $policyPath = Join-Path $efficiencyTestRoot 'AGENTS.md'
+    Set-Content -LiteralPath $configPath -Encoding UTF8 -Value @(
+        'model = "gpt-5.6-sol"'
+        'model_reasoning_effort = "high"'
+        'model_verbosity = "medium"'
+        ''
+        '[features]'
+        'tool_search = true'
+        ''
+        '[mcp_servers.one]'
+        'enabled = true'
+        ''
+        '[mcp_servers.two]'
+        'enabled = true'
+    )
+    $configState = Get-CodexEfficiencyConfigState -Path $configPath
+    $profilePreview = Get-CodexEfficiencyConfigPreview -ProfileName Saver -Path $configPath
+    if ($configState.StatusCode -ne 'Healthy' -or $profilePreview.ChangeCount -ne 2) {
+        throw 'Efficiency profile validation or preview is incorrect.'
+    }
+    $appliedProfile = Set-CodexEfficiencyConfigProfile -ProfileName Saver -Path $configPath `
+        -RollbackPath $rollbackPath -Confirm:$false
+    if (-not $appliedProfile.Applied -or $appliedProfile.State.ReasoningEffort -ne 'low' -or
+        $appliedProfile.State.Verbosity -ne 'low' -or
+        (Get-Content -LiteralPath $configPath -Raw) -notmatch '\[features\]') {
+        throw 'Efficiency profile did not update only the intended allowlisted settings.'
+    }
+    $restoredProfile = Restore-CodexEfficiencyConfig -Path $configPath `
+        -RollbackPath $rollbackPath -Confirm:$false
+    if (-not $restoredProfile.Restored -or $restoredProfile.State.ReasoningEffort -ne 'high' -or
+        $restoredProfile.State.Verbosity -ne 'medium') {
+        throw 'Allowlisted efficiency configuration rollback is incorrect.'
+    }
+    Set-Content -LiteralPath $configPath -Encoding UTF8 -Value @(
+        'model_reasoning_effort = "high"'
+        'model_reasoning_effort = "low"'
+        'model_verbosity = "verbose"'
+        ''
+        '[mcp_servers.one]'
+        'enabled = true'
+        ''
+        '[mcp_servers.two]'
+        'enabled = true'
+    )
+    $brokenConfig = Get-CodexEfficiencyConfigState -Path $configPath
+    if ($brokenConfig.StatusCode -ne 'NeedsRepair' -or $brokenConfig.IssueCount -ne 2) {
+        throw 'Duplicate or invalid allowlisted configuration was not detected.'
+    }
+    $repairedConfig = Repair-CodexEfficiencyConfig -Path $configPath `
+        -RollbackPath $rollbackPath -Confirm:$false
+    if (-not $repairedConfig.Repaired -or $repairedConfig.State.StatusCode -ne 'Healthy' -or
+        $repairedConfig.State.ReasoningEffort -ne 'low') {
+        throw 'Safe allowlisted configuration repair is incorrect.'
+    }
+    $surfaceAudit = Get-CodexToolSurfaceAudit -ConfigPath $configPath -IntegrationEvents @(
+        [pscustomobject]@{ Kind = 'MCP'; Name = 'private tool'; At = Get-Date }
+    )
+    if ($surfaceAudit.ConfiguredMcpServers -ne 2 -or $surfaceAudit.ObservedToolCategories -ne 1 -or
+        -not $surfaceAudit.ReviewOpportunity) {
+        throw 'Aggregate tool-surface audit is incorrect.'
+    }
+    Set-Content -LiteralPath $policyPath -Value '# Existing personal instructions' -Encoding UTF8
+    $installedPolicy = Set-CodexEfficiencyPolicy -Enabled $true -Path $policyPath -Confirm:$false
+    $policyText = Get-Content -LiteralPath $policyPath -Raw
+    if (-not $installedPolicy.Installed -or $policyText -notmatch 'Existing personal instructions' -or
+        ([regex]::Matches($policyText, 'LIVE-CODEX-USAGE-MONITOR:EFFICIENCY-V1 START')).Count -ne 1) {
+        throw 'Managed local efficiency policy installation is unsafe or incorrect.'
+    }
+    $removedPolicy = Set-CodexEfficiencyPolicy -Enabled $false -Path $policyPath -Confirm:$false
+    $policyText = Get-Content -LiteralPath $policyPath -Raw
+    if ($removedPolicy.Installed -or $policyText -notmatch 'Existing personal instructions' -or
+        $policyText -match 'LIVE-CODEX-USAGE-MONITOR:EFFICIENCY-V1') {
+        throw 'Managed local efficiency policy removal is unsafe or incorrect.'
+    }
+    foreach ($privacySafeValue in @(
+        $cacheSavings, $freshAdvice, $healthySchema, $driftSchema,
+        $compaction, $profilePreview, $surfaceAudit, $installedPolicy
+    )) {
+        $efficiencyShape = Test-AggregatePrivacyShape -Value $privacySafeValue
+        if (-not $efficiencyShape.Passed) {
+            throw "Efficiency result violated aggregate privacy: $($efficiencyShape.Violations -join ', ')"
+        }
+    }
+}
+finally {
+    $resolvedEfficiencyRoot = [System.IO.Path]::GetFullPath($efficiencyTestRoot)
+    $resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    if ($resolvedEfficiencyRoot.StartsWith($resolvedTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $resolvedEfficiencyRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host '  Official-report import, sanitization, freshness, and reconciliation'

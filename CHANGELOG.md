@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.3.0 - 2026-07-28
+
+### Usage Saver
+
+- Add a dedicated **Saver** workspace that keeps RTK shell-output savings, prompt-cache rate benefits, and optimization opportunities explicitly separate.
+- Calculate cache-hit percentage and the avoided full-rate credit/API-equivalent difference from local cached-input counters and the dated bundled rate card.
+- Add an advisory fresh-task break-even model based on recent replay size and observed fresh-session baselines.
+- Add a short, removable local output-budget policy for targeted searches, narrow reads, quiet test output, RTK usage, and zero-outbound monitoring.
+- Add an aggregate tool-surface audit that counts configured MCP sections versus locally observed tool categories without returning names or paths.
+
+### High-value functional improvements
+
+- Replace a single combined quota indicator in the Saver workspace with independent short- and long-window meters, reset labels, and even-pace status.
+- Add context-efficiency and compaction-churn panels, including post-compaction reread-spike detection.
+- Add versioned Codex JSONL schema-drift detection for unknown records, malformed records, token-counter changes, and quota-shape changes.
+- Add allowlisted Codex configuration validation, Saver/Balanced/Quality previews, affirmative apply, safe duplicate/invalid-key repair, and local rollback.
+- Preserve model selection, unknown TOML sections, automatic-compaction settings, credentials, server definitions, and all non-allowlisted configuration.
+
+### Privacy and QA
+
+- Keep prompts, responses, commands, arguments, paths, server names, and raw log content out of every efficiency result and persistent rollback file.
+- Extend zero-outbound, aggregate-shape, parser, module, UI-construction, profile/repair/rollback, policy install/remove, quota, cache, schema, and compaction tests.
+- Expand the Control Center to nine responsive tabs and include the efficiency module in release packaging.
+
 ## 3.2.0 - 2026-07-28
 
 ### Personal coverage

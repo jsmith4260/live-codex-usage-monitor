@@ -16,6 +16,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Static analysis
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $modulePath = (Get-Module PSScriptAnalyzer -ListAvailable |
+            Sort-Object Version -Descending |
+            Select-Object -First 1).Path
+          & .\Invoke-StaticAnalysis.ps1 -ModulePath $modulePath
+
       - name: Parse and run deterministic QA
         shell: powershell
         run: |

@@ -74,10 +74,11 @@ param(
     [switch]$InsightsUiSmokeTest,
     [switch]$PerformanceSmokeTest,
     [switch]$CatalogExpansionSmokeTest,
+    [switch]$EfficiencySmokeTest,
     [string]$RtkExecutablePath = '',
     [switch]$DisableRtkIntegration,
     [switch]$StartMinimizedToTray,
-    [ValidateRange(0, 7)]
+    [ValidateRange(0, 8)]
     [int]$InsightsTabIndex = 0,
     [string]$CaptureScreenshotPath = ''
 )
@@ -89,13 +90,14 @@ $scriptDir = Split-Path -Parent $PSCommandPath
 if ([string]::IsNullOrWhiteSpace($scriptDir)) { $scriptDir = (Get-Location).Path }
 
 $costModule = Join-Path $scriptDir 'Live-Codex-Usage-Cost.psm1'
+$efficiencyModule = Join-Path $scriptDir 'Live-Codex-Usage-Efficiency.psm1'
 $guardModule = Join-Path $scriptDir 'Live-Codex-Usage-Guard.psm1'
 $personalModule = Join-Path $scriptDir 'Live-Codex-Usage-Personal.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
 $rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
 $reconciliationModule = Join-Path $scriptDir 'Live-Codex-Usage-Reconciliation.psm1'
 $storeModule = Join-Path $scriptDir 'Live-Codex-Usage-Store.psm1'
-foreach ($modulePath in @($costModule, $guardModule, $personalModule, $privacyModule, $rtkModule, $reconciliationModule, $storeModule)) {
+foreach ($modulePath in @($costModule, $efficiencyModule, $guardModule, $personalModule, $privacyModule, $rtkModule, $reconciliationModule, $storeModule)) {
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) { throw "Required module not found: $modulePath" }
     Import-Module -Name $modulePath -Force
 }
@@ -171,6 +173,7 @@ $script:fileOffsets = @{}
 $script:events = [System.Collections.Generic.List[object]]::new()
 $script:activityEvents = [System.Collections.Generic.List[object]]::new()
 $script:integrationEvents = [System.Collections.Generic.List[object]]::new()
+$script:schemaTracker = New-CodexSchemaTracker
 $script:sessionInfo = @{}
 $script:lastAlertEventId = ''
 $script:latestSource = $null
@@ -646,7 +649,11 @@ function Convert-ActivityEvent {
     # Activity rows need only a sanitized type and timestamp. Classifying from
     # the compact JSON text avoids deserializing large prompt, response, and
     # tool-output payloads that are intentionally never displayed.
-    if ($Line -match '"type":"turn_context"') {
+    if ($Line -match '"type"\s*:\s*"(?:compacted|context_compacted|context_compaction|compact)"') {
+        $label = 'COMPACT'
+        $detail = 'local context compaction recorded'
+    }
+    elseif ($Line -match '"type":"turn_context"') {
         $label = 'CTX'
         $detail = 'context packaged for a turn'
     }
@@ -797,6 +804,7 @@ function Update-Events {
                 [System.Windows.Forms.Application]::DoEvents()
             }
             if (-not (Test-LineTimestampInSelectedRange -Line $line)) { return }
+            Add-CodexSchemaObservation -Tracker $script:schemaTracker -Line $line
             $classificationText = if ($line.Length -gt 8192) { $line.Substring(0, 8192) } else { $line }
             if ($classificationText -match 'session_meta|turn_context') {
                 Update-SessionInfo -Line $classificationText -SourceFile $file.FullName
@@ -857,6 +865,7 @@ function Reset-MonitorWindow {
     $script:events.Clear()
     $script:activityEvents.Clear()
     $script:integrationEvents.Clear()
+    $script:schemaTracker = New-CodexSchemaTracker
     $script:seen.Clear()
     $script:activitySeen.Clear()
     $script:fileOffsets = @{}
@@ -880,6 +889,7 @@ function Reload-Logs {
     $script:events.Clear()
     $script:activityEvents.Clear()
     $script:integrationEvents.Clear()
+    $script:schemaTracker = New-CodexSchemaTracker
     $script:sessionInfo = @{}
     $script:latestSource = $null
     $script:latestSession = $null
@@ -1588,12 +1598,18 @@ function Update-PersonalDiagnostics {
         }
     }
     $readiness = Get-UsageGuardReadiness -Policy $script:guardPolicy
+    $efficiencyConfig = Get-CodexEfficiencyConfigState
+    $efficiencyPolicy = Get-CodexEfficiencyPolicyState
+    $schemaHealth = Get-CodexSchemaHealth -Tracker $script:schemaTracker
     $script:diagnosticRows = @(Get-PersonalMonitorDiagnostics `
         -CodexHome $CodexHome `
         -StateRoot $script:statePaths.Root `
         -RtkSnapshot $script:rtkSnapshot `
         -GuardReadiness $readiness `
         -StartupRegistration $script:startupRegistration `
+        -EfficiencyConfigState $efficiencyConfig `
+        -EfficiencyPolicyState $efficiencyPolicy `
+        -SchemaHealth $schemaHealth `
         -PersistenceEnabled (-not $DisablePersistence) `
         -AppVersion $script:appVersion)
     $script:personalSettings.LastDiagnosticsAt = (Get-Date).ToString('o')
@@ -1694,7 +1710,7 @@ $requiresPreloadedEvents = (
     $RangeCacheSmokeTest -or $QuotaResetSmokeTest -or $ExportSmokeTest -or
     $EnterpriseSmokeTest -or $EnterpriseUiSmokeTest -or
     $ComplianceUiSmokeTest -or $InsightsUiSmokeTest -or $PerformanceSmokeTest -or
-    $CatalogExpansionSmokeTest
+    $CatalogExpansionSmokeTest -or $EfficiencySmokeTest
 )
 if ($requiresPreloadedEvents) {
     Update-Events
@@ -1814,6 +1830,26 @@ if ($CatalogExpansionSmokeTest) {
     Set-MonitorDateRange -FromDate ([datetime]'2026-07-25') -ToDate ([datetime]'2026-07-26')
     $expandedCount = @(Get-DisplayEvents -Mode 'All sessions').Count
     Write-Output ('InitialEvents={0}; ExpandedEvents={1}; CatalogStart={2}' -f $initialCount, $expandedCount, $script:catalogRangeStart.ToString('yyyy-MM-dd'))
+    exit 0
+}
+
+if ($EfficiencySmokeTest) {
+    $efficiencyEvents = @(Get-DisplayEvents -Mode 'All sessions')
+    $efficiencyActivity = @(Get-DisplayActivity -Mode 'All sessions')
+    $cache = Get-PromptCacheSavings -RateCard $script:rateCard -UsageEvents $efficiencyEvents `
+        -DefaultModel ([string]$script:costProfile.DefaultModel) `
+        -DollarsPerCredit ([decimal]$script:costProfile.DollarsPerCredit) `
+        -CreditRateMultiplier ([decimal]$script:costProfile.CreditRateMultiplier)
+    $advice = Get-SessionEfficiencyAdvice -UsageEvents $efficiencyEvents
+    $schema = Get-CodexSchemaHealth -Tracker $script:schemaTracker
+    $churn = Get-CompactionChurn -UsageEvents $efficiencyEvents -ActivityEvents $efficiencyActivity
+    $latestEfficiencyEvent = @($efficiencyEvents | Sort-Object At -Descending | Select-Object -First 1)
+    $quotaWindows = if ($latestEfficiencyEvent.Count -eq 1) {
+        @(Get-QuotaWindowMetrics -RateLimits $latestEfficiencyEvent[0].RateLimits)
+    }
+    else { @() }
+    Write-Output ('Cache={0:N1}%; Schema={1}; QuotaWindows={2}; Advice={3}; Compactions={4}' -f `
+        $cache.CacheHitPercent, $schema.StatusCode, $quotaWindows.Count, $advice.StatusCode, $churn.Compactions)
     exit 0
 }
 
@@ -2327,7 +2363,7 @@ $exportButton.AccessibleDescription = 'Write daily aggregate counts only. Prompt
 $enterpriseButton.AccessibleName = 'Import my local ChatGPT data'
 $enterpriseButton.AccessibleDescription = 'Open a downloaded usage summary or activity export limited to this individual.'
 $controlCenterButton.AccessibleName = 'Open insights and controls'
-$controlCenterButton.AccessibleDescription = 'Open offline trends, local RTK savings health, spending estimates, downloaded-report comparison, provenance, personal settings, and the opt-in usage guard.'
+$controlCenterButton.AccessibleDescription = 'Open offline trends, the usage saver, local RTK savings health, spending estimates, downloaded-report comparison, provenance, personal settings, and the opt-in usage guard.'
 $miniButton.AccessibleName = 'Toggle compact monitor mode'
 $miniButton.AccessibleDescription = 'Switch between the full dashboard and the always-on-top compact status view.'
 $viewAllButton.AccessibleName = 'Show all tasks'
@@ -2346,7 +2382,7 @@ $toolTip.SetToolTip($presetBox, 'Choose a quick range. Custom keeps the calendar
 $toolTip.SetToolTip($loadRangeButton, 'Load the complete selected date range (Ctrl+L).')
 $toolTip.SetToolTip($exportButton, 'Export daily aggregates only; no prompts, paths, task names, or identifiers (Ctrl+E).')
 $toolTip.SetToolTip($enterpriseButton, 'Import a downloaded report limited to your own account; files remain on this PC.')
-$toolTip.SetToolTip($controlCenterButton, 'Open offline insights, RTK savings health, cost estimates, downloaded-report comparison, personal settings, and the opt-in usage guard.')
+$toolTip.SetToolTip($controlCenterButton, 'Open offline insights, the usage saver, RTK savings health, cost estimates, downloaded-report comparison, personal settings, and the opt-in usage guard.')
 $toolTip.SetToolTip($miniButton, 'Toggle the always-on-top compact view (Ctrl+M).')
 $toolTip.SetToolTip($clearButton, 'Discard the in-memory window and watch only newly appended log records.')
 
@@ -2717,10 +2753,13 @@ function Refresh-Display {
     else { '' }
     $warningText = if ($script:startupWarnings.Count -gt 0) { ' | warning: ' + $script:startupWarnings[0] } else { '' }
     $rtkText = 'RTK {0}, saved ~{1}' -f $script:rtkSnapshot.HealthLabel, (Format-Tokens ([int64]$script:rtkSnapshot.SavedTokensEstimate))
-    $noteLabel.Text = 'Offline/no paid calls | est {0:N2} credits{1} | {2} | {3} | {4} | {5} | guard {6}{7}' -f `
-        ([decimal]$script:costEstimate.EstimatedCredits), $unpricedText, $apiText, $cashText, $officialText, $rtkText, $script:guardStatus.Label, $warningText
+    $mainSchemaHealth = Get-CodexSchemaHealth -Tracker $script:schemaTracker
+    $schemaText = if ($mainSchemaHealth.StatusCode -eq 'Drift') { 'schema change detected' } else { 'schema compatible' }
+    $noteLabel.Text = 'Offline/no paid calls | est {0:N2} credits{1} | {2} | {3} | {4} | {5} | {6} | guard {7}{8}' -f `
+        ([decimal]$script:costEstimate.EstimatedCredits), $unpricedText, $apiText, $cashText, $officialText, $rtkText, $schemaText, $script:guardStatus.Label, $warningText
     if ([bool]$script:guardPolicy.Locked -or -not [bool]$script:rtkSnapshot.Working -or
-        [int64]$script:costEstimate.UnpricedTokens -gt 0 -or $script:startupWarnings.Count -gt 0) {
+        [int64]$script:costEstimate.UnpricedTokens -gt 0 -or $script:startupWarnings.Count -gt 0 -or
+        $mainSchemaHealth.StatusCode -eq 'Drift') {
         $noteLabel.ForeColor = $uiWarning
     }
     else {
@@ -3266,7 +3305,7 @@ function Show-PersonalImportDialog {
 function Show-ControlCenterDialog {
     param(
         [switch]$ConstructionOnly,
-        [ValidateRange(0, 7)]
+        [ValidateRange(0, 8)]
         [int]$InitialTabIndex = 0,
         [string]$ScreenshotPath = ''
     )
@@ -3309,6 +3348,28 @@ function Show-ControlCenterDialog {
     }
     $forecast = Get-UsageForecast -DailyRows $trendRows
     $modelRows = @(Get-ModelUsageBreakdown -UsageEvents $allUsage -CostDetails @($script:costEstimate.Details))
+    $allActivity = @(Get-DisplayActivity -Mode 'All sessions')
+    $allIntegrations = @(Get-DisplayIntegrations -Mode 'All sessions')
+    $cacheEfficiency = Get-PromptCacheSavings `
+        -RateCard $script:rateCard `
+        -UsageEvents $allUsage `
+        -DefaultModel ([string]$script:costProfile.DefaultModel) `
+        -DollarsPerCredit ([decimal]$script:costProfile.DollarsPerCredit) `
+        -CreditRateMultiplier ([decimal]$script:costProfile.CreditRateMultiplier)
+    $sessionAdvice = Get-SessionEfficiencyAdvice -UsageEvents $allUsage `
+        -BloatedContextTokens $WarnContextTokens
+    $schemaHealth = Get-CodexSchemaHealth -Tracker $script:schemaTracker
+    $compactionHealth = Get-CompactionChurn -UsageEvents $allUsage -ActivityEvents $allActivity
+    $latestEfficiencyEvent = @($allUsage | Sort-Object At -Descending | Select-Object -First 1)
+    $quotaWindows = if ($latestEfficiencyEvent.Count -eq 1) {
+        @(Get-QuotaWindowMetrics -RateLimits $latestEfficiencyEvent[0].RateLimits)
+    }
+    else {
+        @(Get-QuotaWindowMetrics -RateLimits $null)
+    }
+    $codexConfigState = Get-CodexEfficiencyConfigState
+    $efficiencyPolicyState = Get-CodexEfficiencyPolicyState
+    $toolSurfaceAudit = Get-CodexToolSurfaceAudit -IntegrationEvents $allIntegrations
 
     $dialog = New-Object System.Windows.Forms.Form
     $dialog.Text = 'Live Codex Usage - Control Center'
@@ -3321,7 +3382,7 @@ function Show-ControlCenterDialog {
     $dialog.Font = New-UiFont 9.5
     $dialog.KeyPreview = $true
     $dialog.AccessibleName = 'Usage insights and controls'
-    $dialog.AccessibleDescription = 'Offline usage trends, local RTK savings health, cost estimates, downloaded-report comparison, provenance, personal settings, and opt-in guard settings.'
+    $dialog.AccessibleDescription = 'Offline usage trends, cache and context efficiency, independent quota windows, schema health, local RTK savings, cost estimates, downloaded-report comparison, provenance, personal settings, and opt-in guard settings.'
 
     function Add-ControlCenterLabel {
         param(
@@ -3580,6 +3641,348 @@ function Show-ControlCenterDialog {
         }
     }
     $heatmapTab.Controls.Add($heatmapGrid)
+
+    # Usage saver, dual quota windows, schema compatibility, and safe Codex configuration
+    $saverTab = New-ControlCenterTab 'Saver'
+    $saverTab.AutoScroll = $true
+    $saverTab.AccessibleName = 'Usage saver and efficiency'
+    $saverTab.AccessibleDescription = 'Local cache efficiency, independent quota windows, session rollover advice, schema health, compaction health, and confirmed reversible Codex settings.'
+
+    function New-SaverCard {
+        param(
+            [string]$Title,
+            [int]$X,
+            [int]$Y,
+            [int]$Width,
+            [int]$Height,
+            [string]$AccessibleDescription
+        )
+        $panel = New-Object System.Windows.Forms.Panel
+        $panel.Location = New-Object System.Drawing.Point($X, $Y)
+        $panel.Size = New-Object System.Drawing.Size($Width, $Height)
+        $panel.BackColor = $uiWindow
+        $panel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+        $panel.AccessibleName = $Title
+        $panel.AccessibleDescription = $AccessibleDescription
+        $saverTab.Controls.Add($panel)
+        [void](Add-ControlCenterLabel -Parent $panel -Text $Title.ToUpperInvariant() -X 12 -Y 8 `
+            -Width ($Width - 24) -Height 18 -Size 8 -Color $uiTextMuted `
+            -Style ([System.Drawing.FontStyle]::Bold))
+        return $panel
+    }
+
+    function New-QuotaSaverCard {
+        param([object]$Window, [int]$X)
+
+        $panel = New-SaverCard -Title ([string]$Window.Label) -X $X -Y 14 -Width 496 -Height 94 `
+            -AccessibleDescription 'Independent local rate-limit percentage, reset countdown, and pace. Text duplicates the visual meter.'
+        $valueLabel = Add-ControlCenterLabel -Parent $panel -Text '' -X 12 -Y 28 -Width 470 -Height 24 `
+            -Size 12 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold)
+        $meter = New-Object System.Windows.Forms.ProgressBar
+        $meter.Location = New-Object System.Drawing.Point(12, 54)
+        $meter.Size = New-Object System.Drawing.Size(470, 10)
+        $meter.Minimum = 0
+        $meter.Maximum = 100
+        $meter.Style = [System.Windows.Forms.ProgressBarStyle]::Continuous
+        $meter.AccessibleName = "$($Window.Label) quota used"
+        $panel.Controls.Add($meter)
+        $detailLabel = Add-ControlCenterLabel -Parent $panel -Text '' -X 12 -Y 69 -Width 470 -Height 18 `
+            -Size 8.5 -Color $uiTextMuted
+        if ([bool]$Window.Available) {
+            $meter.Value = [Math]::Max(0, [Math]::Min(100, [int][double]$Window.UsedPercent))
+            $valueLabel.Text = '{0:N0}% used  |  {1:N0}% remaining' -f `
+                [double]$Window.UsedPercent, [double]$Window.RemainingPercent
+            $valueLabel.ForeColor = if ([double]$Window.UsedPercent -ge 90) {
+                $uiCritical
+            }
+            elseif ([double]$Window.UsedPercent -ge 75) {
+                $uiWarning
+            }
+            else {
+                $uiSuccess
+            }
+            $quotaDetailParts = @(
+                @([string]$Window.ResetLabel, [string]$Window.PaceLabel) |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $detailLabel.Text = $quotaDetailParts -join '  |  '
+        }
+        else {
+            $meter.Value = 0
+            $valueLabel.Text = 'Not available in the latest local token event'
+            $valueLabel.ForeColor = $uiTextSecondary
+            $detailLabel.Text = 'The monitor does not poll an account to fill missing quota metadata.'
+        }
+        return $panel
+    }
+
+    [void](New-QuotaSaverCard -Window $quotaWindows[0] -X 14)
+    [void](New-QuotaSaverCard -Window $quotaWindows[1] -X 520)
+
+    $cacheCard = New-SaverCard -Title 'Cache efficiency' -X 14 -Y 120 -Width 496 -Height 132 `
+        -AccessibleDescription 'Calculated from local cached and fresh input counters. Kept separate from measured RTK output compression.'
+    $cacheHeadline = Add-ControlCenterLabel -Parent $cacheCard `
+        -Text ('{0:N1}% cache hit  |  {1} health' -f $cacheEfficiency.CacheHitPercent, $cacheEfficiency.HealthLabel) `
+        -X 12 -Y 30 -Width 470 -Height 25 -Size 13 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold)
+    $cacheTokensLabel = Add-ControlCenterLabel -Parent $cacheCard `
+        -Text ('Cached {0}  |  fresh input {1}' -f `
+            (Format-Tokens ([int64]$cacheEfficiency.CachedInputTokens)), `
+            (Format-Tokens ([int64]$cacheEfficiency.FreshInputTokens))) `
+        -X 12 -Y 58 -Width 470 -Height 20 -Size 9 -Color $uiTextSecondary
+    $cacheMoney = if ($null -ne $cacheEfficiency.CalculatedApiEquivalentUsdAvoided) {
+        '  |  API-equivalent ${0:N2}' -f [decimal]$cacheEfficiency.CalculatedApiEquivalentUsdAvoided
+    }
+    else {
+        '  |  API-equivalent incomplete'
+    }
+    $cacheSavingsLabel = Add-ControlCenterLabel -Parent $cacheCard `
+        -Text ('Calculated cache benefit: {0:N3} credits{1}' -f `
+            [decimal]$cacheEfficiency.CalculatedCreditsAvoided, $cacheMoney) `
+        -X 12 -Y 82 -Width 470 -Height 20 -Size 9 -Color $uiSuccess
+    $cacheClassLabel = Add-ControlCenterLabel -Parent $cacheCard `
+        -Text ('Separate actual saver: RTK ~{0} estimated output tokens saved. No totals are combined.' -f `
+            (Format-Tokens ([int64]$script:rtkSnapshot.SavedTokensEstimate))) `
+        -X 12 -Y 106 -Width 470 -Height 18 -Size 8 -Color $uiTextMuted
+
+    $advisorCard = New-SaverCard -Title 'Fresh-task advisor' -X 520 -Y 120 -Width 496 -Height 132 `
+        -AccessibleDescription 'Advisory estimate based only on aggregate input replay and observed fresh-task baselines.'
+    $advisorHeadline = Add-ControlCenterLabel -Parent $advisorCard -Text ([string]$sessionAdvice.Action) `
+        -X 12 -Y 30 -Width 470 -Height 25 -Size 13 `
+        -Color $(if ($sessionAdvice.StatusCode -eq 'FreshTaskOpportunity') { $uiWarning } else { $uiSuccess }) `
+        -Style ([System.Drawing.FontStyle]::Bold)
+    $advisorMetrics = Add-ControlCenterLabel -Parent $advisorCard `
+        -Text ('Recent replay {0}/turn  |  baseline {1}  |  possible excess {2}/future turn' -f `
+            (Format-Tokens ([int64]$sessionAdvice.RecentAverageInputTokens)), `
+            (Format-Tokens ([int64]$sessionAdvice.BaselineStartInputTokens)), `
+            (Format-Tokens ([int64]$sessionAdvice.ExcessReplayTokensPerFutureTurn))) `
+        -X 12 -Y 58 -Width 470 -Height 20 -Size 9 -Color $uiTextSecondary
+    $advisorDetail = Add-ControlCenterLabel -Parent $advisorCard -Text ([string]$sessionAdvice.Detail) `
+        -X 12 -Y 82 -Width 470 -Height 38 -Size 8.5 -Color $uiTextMuted
+
+    $reliabilityCard = New-SaverCard -Title 'Coverage and reliability' -X 14 -Y 264 -Width 496 -Height 132 `
+        -AccessibleDescription 'Aggregate schema compatibility and compaction churn checks. No log content or identifiers are retained.'
+    $schemaLabel = Add-ControlCenterLabel -Parent $reliabilityCard `
+        -Text ('Schema: {0}  |  compatibility {1:N1}%' -f $schemaHealth.Label, $schemaHealth.CompatibilityPercent) `
+        -X 12 -Y 30 -Width 470 -Height 22 -Size 10 `
+        -Color $(if ($schemaHealth.StatusCode -eq 'Healthy') { $uiSuccess } else { $uiWarning }) `
+        -Style ([System.Drawing.FontStyle]::Bold)
+    $schemaDetailLabel = Add-ControlCenterLabel -Parent $reliabilityCard -Text ([string]$schemaHealth.Detail) `
+        -X 12 -Y 54 -Width 470 -Height 34 -Size 8 -Color $uiTextMuted
+    $compactionLabel = Add-ControlCenterLabel -Parent $reliabilityCard `
+        -Text ('Compaction: {0}  |  reread spikes {1}' -f `
+            $compactionHealth.Label, $compactionHealth.PostCompactionRereadSpikes) `
+        -X 12 -Y 91 -Width 470 -Height 20 -Size 9 `
+        -Color $(if ($compactionHealth.StatusCode -eq 'Churning') { $uiWarning } else { $uiTextSecondary }) `
+        -Style ([System.Drawing.FontStyle]::Bold)
+    $compactionDetailLabel = Add-ControlCenterLabel -Parent $reliabilityCard `
+        -Text ([string]$compactionHealth.Detail) -X 12 -Y 111 -Width 470 -Height 16 `
+        -Size 7.5 -Color $uiTextMuted
+
+    $policyCard = New-SaverCard -Title 'Local output-budget policy' -X 14 -Y 408 -Width 496 -Height 144 `
+        -AccessibleDescription 'A short managed AGENTS.md block that encourages targeted searches, narrow reads, quiet tests, RTK, and local-only monitoring.'
+    $policyStatusLabel = Add-ControlCenterLabel -Parent $policyCard -Text '' -X 12 -Y 30 -Width 470 -Height 22 `
+        -Size 10 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold)
+    $toolAuditLabel = Add-ControlCenterLabel -Parent $policyCard -Text '' -X 12 -Y 55 -Width 470 -Height 38 `
+        -Size 8.5 -Color $uiTextSecondary
+    $installPolicyButton = Add-ControlCenterButton -Parent $policyCard -Text 'Install policy' -X 12 -Y 101 -Width 132
+    $removePolicyButton = Add-ControlCenterButton -Parent $policyCard -Text 'Remove policy' -X 154 -Y 101 -Width 132
+    $policyNote = Add-ControlCenterLabel -Parent $policyCard `
+        -Text 'Local, removable, zero-outbound; affirmative click only.' `
+        -X 298 -Y 99 -Width 184 -Height 38 -Size 7.5 -Color $uiTextMuted
+
+    $configCard = New-SaverCard -Title 'Codex efficiency profiles' -X 520 -Y 264 -Width 496 -Height 288 `
+        -AccessibleDescription 'Validates and changes only allowlisted top-level Codex settings after preview and confirmation, with local rollback.'
+    $configStatusLabel = Add-ControlCenterLabel -Parent $configCard -Text '' -X 12 -Y 30 -Width 470 -Height 22 `
+        -Size 10 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold)
+    $configCurrentLabel = Add-ControlCenterLabel -Parent $configCard -Text '' -X 12 -Y 54 -Width 470 -Height 38 `
+        -Size 8.5 -Color $uiTextSecondary
+    $profileBox = New-Object System.Windows.Forms.ComboBox
+    $profileBox.Location = New-Object System.Drawing.Point(12, 98)
+    $profileBox.Size = New-Object System.Drawing.Size(140, 28)
+    $profileBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    $profileBox.BackColor = $uiSurfaceRaised
+    $profileBox.ForeColor = $uiText
+    $profileBox.Font = New-UiFont 9
+    [void]$profileBox.Items.AddRange(@('Saver','Balanced','Quality'))
+    $profileBox.SelectedItem = 'Balanced'
+    $profileBox.AccessibleName = 'Codex efficiency profile'
+    $configCard.Controls.Add($profileBox)
+    $previewProfileButton = Add-ControlCenterButton -Parent $configCard -Text 'Preview' -X 162 -Y 96 -Width 92
+    $applyProfileButton = Add-ControlCenterButton -Parent $configCard -Text 'Apply profile' -X 264 -Y 96 -Width 104
+    $repairConfigButton = Add-ControlCenterButton -Parent $configCard -Text 'Safe repair' -X 378 -Y 96 -Width 104
+    $rollbackConfigButton = Add-ControlCenterButton -Parent $configCard -Text 'Rollback last change' -X 12 -Y 138 -Width 160
+    $validateConfigButton = Add-ControlCenterButton -Parent $configCard -Text 'Validate now' -X 182 -Y 138 -Width 120
+    $configProfileNote = Add-ControlCenterLabel -Parent $configCard `
+        -Text 'Profiles change future Codex reasoning/verbosity only. They never invoke Codex. Model selection and automatic compaction are left untouched.' `
+        -X 12 -Y 180 -Width 470 -Height 42 -Size 8.5 -Color $uiTextMuted
+    $configActionLabel = Add-ControlCenterLabel -Parent $configCard `
+        -Text 'No configuration action taken.' -X 12 -Y 228 -Width 470 -Height 42 `
+        -Size 8.5 -Color $uiTextSecondary
+
+    function Refresh-SaverControls {
+        $currentConfig = Get-CodexEfficiencyConfigState
+        $currentPolicy = Get-CodexEfficiencyPolicyState
+        $currentAudit = Get-CodexToolSurfaceAudit -IntegrationEvents $allIntegrations
+        $configStatusLabel.Text = 'Validation: ' + [string]$currentConfig.StatusLabel
+        $configStatusLabel.ForeColor = if ($currentConfig.StatusCode -eq 'NeedsRepair') {
+            $uiWarning
+        }
+        else {
+            $uiSuccess
+        }
+        $modelValue = if ($currentConfig.Model) { $currentConfig.Model } else { 'Codex default/unknown' }
+        $effortValue = if ($currentConfig.ReasoningEffort) { $currentConfig.ReasoningEffort } else { 'default' }
+        $verbosityValue = if ($currentConfig.Verbosity) { $currentConfig.Verbosity } else { 'default' }
+        $configCurrentLabel.Text = 'Model {0}  |  reasoning {1}  |  verbosity {2}  |  issues {3}' -f `
+            $modelValue, $effortValue, $verbosityValue, $currentConfig.IssueCount
+        $repairConfigButton.Enabled = [bool]$currentConfig.RepairAvailable
+        $rollbackConfigButton.Enabled = Test-Path -LiteralPath $script:statePaths.CodexEfficiencyRollback -PathType Leaf
+        $policyStatusLabel.Text = [string]$currentPolicy.StatusLabel
+        $policyStatusLabel.ForeColor = if ($currentPolicy.StatusCode -eq 'Installed') {
+            $uiSuccess
+        }
+        elseif ($currentPolicy.StatusCode -eq 'NeedsRepair') {
+            $uiWarning
+        }
+        else {
+            $uiTextSecondary
+        }
+        $installPolicyButton.Enabled = -not [bool]$currentPolicy.Installed
+        $removePolicyButton.Enabled = [bool]$currentPolicy.Installed
+        $toolAuditLabel.Text = 'Tool surface: {0} configured MCP section(s), {1} observed category(s), {2} call(s). {3}' -f `
+            $currentAudit.ConfiguredMcpServers, $currentAudit.ObservedToolCategories,
+            $currentAudit.ObservedCalls, $currentAudit.Recommendation
+    }
+
+    $previewProfileButton.Add_Click({
+        try {
+            $preview = Get-CodexEfficiencyConfigPreview -ProfileName ([string]$profileBox.SelectedItem)
+            $changeText = if ($preview.ChangeCount -eq 0) {
+                'No allowlisted setting would change.'
+            }
+            else {
+                (@($preview.Changes) | ForEach-Object {
+                    '{0}: {1} -> {2}' -f $_.Setting, $_.CurrentValue, $_.ProposedValue
+                }) -join [Environment]::NewLine
+            }
+            [System.Windows.Forms.MessageBox]::Show(
+                ("{0}`n`n{1}`n`nThis is a local preview. No Codex request or paid activity occurs." -f `
+                    $preview.Description, $changeText),
+                'Efficiency profile preview'
+            ) | Out-Null
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to preview profile') | Out-Null }
+    })
+    $applyProfileButton.Add_Click({
+        try {
+            $profileName = [string]$profileBox.SelectedItem
+            $preview = Get-CodexEfficiencyConfigPreview -ProfileName $profileName
+            if ($preview.ChangeCount -eq 0) {
+                $configActionLabel.Text = "$profileName is already represented by the allowlisted settings."
+                Refresh-SaverControls
+                return
+            }
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                ("Apply the {0} profile to future Codex sessions?`n`nOnly reasoning effort and answer verbosity change. " +
+                    'A local allowlisted rollback is saved first. Restarting Codex is recommended. No Codex request is made now.') -f $profileName,
+                'Confirm efficiency profile',
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            $result = Set-CodexEfficiencyConfigProfile -ProfileName $profileName `
+                -RollbackPath $script:statePaths.CodexEfficiencyRollback -Confirm:$false
+            $configActionLabel.Text = if ($result.Applied) {
+                "$profileName applied locally. Restart Codex when convenient; rollback is available."
+            }
+            else {
+                'No configuration change was required.'
+            }
+            Refresh-SaverControls
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to apply profile') | Out-Null }
+    })
+    $validateConfigButton.Add_Click({
+        try {
+            $state = Get-CodexEfficiencyConfigState
+            $configActionLabel.Text = 'Validation complete: ' + [string]$state.StatusLabel
+            Refresh-SaverControls
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to validate configuration') | Out-Null }
+    })
+    $repairConfigButton.Add_Click({
+        try {
+            $state = Get-CodexEfficiencyConfigState
+            if (-not $state.RepairAvailable) {
+                $configActionLabel.Text = 'No allowlisted configuration issue requires repair.'
+                Refresh-SaverControls
+                return
+            }
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                ("Normalize {0} duplicate or invalid allowlisted setting issue(s)?`n`n" +
+                    'Unknown configuration sections are preserved. A local allowlisted rollback is saved first.') -f $state.IssueCount,
+                'Confirm safe configuration repair',
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            $result = Repair-CodexEfficiencyConfig `
+                -RollbackPath $script:statePaths.CodexEfficiencyRollback -Confirm:$false
+            $configActionLabel.Text = if ($result.Repaired) {
+                "Safe repair completed for $($result.IssueCount) allowlisted issue(s)."
+            }
+            else {
+                'No repair was required.'
+            }
+            Refresh-SaverControls
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to repair configuration') | Out-Null }
+    })
+    $rollbackConfigButton.Add_Click({
+        try {
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                'Restore the allowlisted Codex efficiency settings saved before the last profile or repair action?',
+                'Confirm configuration rollback',
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            [void](Restore-CodexEfficiencyConfig -RollbackPath $script:statePaths.CodexEfficiencyRollback -Confirm:$false)
+            $configActionLabel.Text = 'Prior allowlisted settings restored locally. Restart Codex when convenient.'
+            Refresh-SaverControls
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to restore configuration') | Out-Null }
+    })
+    $installPolicyButton.Add_Click({
+        try {
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                ('Install the managed local output-budget policy for future Codex work? ' +
+                    'It adds a short removable block encouraging RTK, targeted searches, narrow reads, quiet tests, and no monitor-data transmission.'),
+                'Confirm local efficiency policy',
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            )
+            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            [void](Set-CodexEfficiencyPolicy -Enabled $true -Confirm:$false)
+            Refresh-SaverControls
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to install efficiency policy') | Out-Null }
+    })
+    $removePolicyButton.Add_Click({
+        try {
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                'Remove only the managed Live Codex Usage Monitor efficiency-policy block?',
+                'Confirm policy removal',
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            [void](Set-CodexEfficiencyPolicy -Enabled $false -Confirm:$false)
+            Refresh-SaverControls
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to remove efficiency policy') | Out-Null }
+    })
+    Refresh-SaverControls
 
     # Local RTK command-output savings and health
     $rtkTab = New-ControlCenterTab 'RTK health'
@@ -4550,9 +4953,11 @@ function Show-ControlCenterDialog {
         catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to export diagnostics') | Out-Null }
         finally { $saveDialog.Dispose() }
     })
-    $openRtkHealthButton.Add_Click({ $tabs.SelectedIndex = 2 })
-    $openUsageGuardButton.Add_Click({ $tabs.SelectedIndex = 5 })
+    $openRtkHealthButton.Add_Click({ $tabs.SelectedIndex = 3 })
+    $openUsageGuardButton.Add_Click({ $tabs.SelectedIndex = 6 })
     Refresh-PersonalSettingsTab
+
+    $tabs.SizeMode = [System.Windows.Forms.TabSizeMode]::FillToRight
 
     $dialog.Add_KeyDown({
         if ($_.KeyCode -eq [System.Windows.Forms.Keys]::Escape) {
