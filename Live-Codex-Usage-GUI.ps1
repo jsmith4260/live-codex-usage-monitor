@@ -12,6 +12,7 @@ Run:
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -StartMini
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -InitialView "All sessions" -HistoryHours 48
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -ShowPromptTaskTitles
+  powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -AllowMultipleInstances
 
 Optional QA (no window):
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -Once
@@ -78,6 +79,7 @@ param(
     [string]$RtkExecutablePath = '',
     [switch]$DisableRtkIntegration,
     [switch]$StartMinimizedToTray,
+    [switch]$AllowMultipleInstances,
     [ValidateRange(0, 8)]
     [int]$InsightsTabIndex = 0,
     [string]$CaptureScreenshotPath = ''
@@ -92,16 +94,51 @@ if ([string]::IsNullOrWhiteSpace($scriptDir)) { $scriptDir = (Get-Location).Path
 $costModule = Join-Path $scriptDir 'Live-Codex-Usage-Cost.psm1'
 $efficiencyModule = Join-Path $scriptDir 'Live-Codex-Usage-Efficiency.psm1'
 $guardModule = Join-Path $scriptDir 'Live-Codex-Usage-Guard.psm1'
+$instanceModule = Join-Path $scriptDir 'Live-Codex-Usage-Instance.psm1'
 $personalModule = Join-Path $scriptDir 'Live-Codex-Usage-Personal.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
 $rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
 $reconciliationModule = Join-Path $scriptDir 'Live-Codex-Usage-Reconciliation.psm1'
 $storeModule = Join-Path $scriptDir 'Live-Codex-Usage-Store.psm1'
-foreach ($modulePath in @($costModule, $efficiencyModule, $guardModule, $personalModule, $privacyModule, $rtkModule, $reconciliationModule, $storeModule)) {
+foreach ($modulePath in @(
+    $costModule, $efficiencyModule, $guardModule, $instanceModule, $personalModule,
+    $privacyModule, $rtkModule, $reconciliationModule, $storeModule
+)) {
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) { throw "Required module not found: $modulePath" }
     Import-Module -Name $modulePath -Force
 }
 $script:startupWarnings = [System.Collections.Generic.List[string]]::new()
+$script:instanceCoordinator = $null
+$script:instanceStatusCode = 'Unavailable'
+$automatedMode = @(
+    $Once, $UiSmokeTest, $MiniSmokeTest, $IntegrationSmokeTest, $TaskSmokeTest,
+    $DateRangeSmokeTest, $StatusSmokeTest, $AlertSmokeTest, $ArchivedSmokeTest,
+    $PresetSmokeTest, $RangeCacheSmokeTest, $QuotaResetSmokeTest, $ExportSmokeTest,
+    $EnterpriseSmokeTest, $EnterpriseUiSmokeTest, $ComplianceUiSmokeTest,
+    $InsightsUiSmokeTest, $PerformanceSmokeTest, $CatalogExpansionSmokeTest,
+    $EfficiencySmokeTest
+) -contains $true
+if ($AllowMultipleInstances) {
+    $script:instanceStatusCode = 'Bypassed'
+}
+elseif ($automatedMode) {
+    $script:instanceStatusCode = 'TestBypass'
+}
+else {
+    try {
+        $script:instanceCoordinator = New-MonitorInstanceCoordinator
+        if (-not $script:instanceCoordinator.IsPrimary) {
+            Write-Output 'The existing Live Codex Usage Monitor window was requested.'
+            exit 0
+        }
+        $script:instanceStatusCode = 'Active'
+    }
+    catch {
+        $script:instanceCoordinator = $null
+        $script:instanceStatusCode = 'Unavailable'
+        $script:startupWarnings.Add('Single-instance coordination is unavailable; this launch will continue.')
+    }
+}
 $script:rateCard = Import-UsageRateCard -Path (Join-Path $scriptDir 'config\usage-rates.json')
 $script:statePaths = Get-MonitorStatePaths -Root $StateRoot
 $script:appVersion = (Get-Content -LiteralPath (Join-Path $scriptDir 'VERSION') -Raw).Trim()
@@ -1612,6 +1649,33 @@ function Update-PersonalDiagnostics {
         -SchemaHealth $schemaHealth `
         -PersistenceEnabled (-not $DisablePersistence) `
         -AppVersion $script:appVersion)
+    $instanceDiagnostic = switch ($script:instanceStatusCode) {
+        'Active' {
+            [pscustomobject]@{
+                Check = 'Single instance'; Status = 'OK'
+                Detail = 'A second launcher restores this current-user monitor.'
+            }
+        }
+        'Bypassed' {
+            [pscustomobject]@{
+                Check = 'Single instance'; Status = 'INFO'
+                Detail = 'Multiple instances were explicitly allowed for this launch.'
+            }
+        }
+        'TestBypass' {
+            [pscustomobject]@{
+                Check = 'Single instance'; Status = 'INFO'
+                Detail = 'Duplicate-launch protection is disabled for deterministic QA.'
+            }
+        }
+        default {
+            [pscustomobject]@{
+                Check = 'Single instance'; Status = 'WARN'
+                Detail = 'Duplicate-launch protection is unavailable for this session.'
+            }
+        }
+    }
+    $script:diagnosticRows = @($script:diagnosticRows) + @($instanceDiagnostic)
     $script:personalSettings.LastDiagnosticsAt = (Get-Date).ToString('o')
     Save-PersonalSettingsState
     return @($script:diagnosticRows)
@@ -4985,8 +5049,12 @@ function Show-ControlCenterDialog {
                 $dialog.Hide()
             }
         }
-        Write-Output ('Control center constructed successfully; Tabs={0}; TrendRows={1}; Models={2}' -f `
-            $tabs.TabPages.Count, $trendRows.Count, $modelRows.Count)
+        $instanceDiagnosticRows = @($script:diagnosticRows | Where-Object { $_.Check -eq 'Single instance' })
+        if ($instanceDiagnosticRows.Count -ne 1) {
+            throw 'The sanitized single-instance diagnostic row is missing.'
+        }
+        Write-Output ('Control center constructed successfully; Tabs={0}; TrendRows={1}; Models={2}; Instance={3}' -f `
+            $tabs.TabPages.Count, $trendRows.Count, $modelRows.Count, $instanceDiagnosticRows[0].Status)
     }
     else {
         [void]$dialog.ShowDialog($form)
@@ -5224,6 +5292,28 @@ if ($null -ne $script:notifyIcon) {
     })
 }
 
+$instanceActivationTimer = $null
+if ($null -ne $script:instanceCoordinator) {
+    $instanceActivationTimer = New-Object System.Windows.Forms.Timer
+    $instanceActivationTimer.Interval = 250
+    $instanceActivationTimer.Add_Tick({
+        if (-not (Test-MonitorInstanceActivation -Coordinator $script:instanceCoordinator)) { return }
+        $form.ShowInTaskbar = $true
+        $form.Show()
+        if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
+            $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+        }
+        $visibleOwnedForms = @($form.OwnedForms | Where-Object { $_.Visible })
+        $activationTarget = $form
+        if ($visibleOwnedForms.Count -gt 0) {
+            $activationTarget = $visibleOwnedForms[$visibleOwnedForms.Count - 1]
+        }
+        $activationTarget.BringToFront()
+        $activationTarget.Activate()
+    })
+    $instanceActivationTimer.Start()
+}
+
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = $PollSeconds * 1000
 $timer.Add_Tick({
@@ -5289,6 +5379,10 @@ $form.Add_FormClosed({
     $timer.Stop()
     $startupRestoreTimer.Stop()
     $startupRestoreTimer.Dispose()
+    if ($null -ne $instanceActivationTimer) {
+        $instanceActivationTimer.Stop()
+        $instanceActivationTimer.Dispose()
+    }
     if ($null -ne $script:notifyIcon) {
         $script:notifyIcon.Visible = $false
         $script:notifyIcon.Dispose()
@@ -5337,4 +5431,10 @@ if ($UiSmokeTest -or $MiniSmokeTest) {
     exit 0
 }
 
-[void]$form.ShowDialog()
+try {
+    [void]$form.ShowDialog()
+}
+finally {
+    Close-MonitorInstanceCoordinator -Coordinator $script:instanceCoordinator
+    $script:instanceCoordinator = $null
+}

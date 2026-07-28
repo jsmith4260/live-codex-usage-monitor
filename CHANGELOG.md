@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.4.0 - 2026-07-28
+
+### Windows reliability
+
+- Add current-user single-instance coordination with access-controlled Windows synchronization objects.
+- Make a second interactive launch signal and restore the existing dashboard or active dialog instead of creating another monitor process.
+- Keep every automated smoke-test mode independent and provide an explicit troubleshooting-only multiple-instance switch.
+- Launch both double-click `.cmd` entry points in hidden-console STA mode so the WinForms dashboard is the visible application surface.
+
+### Distribution and community
+
+- Add a tag-driven Windows release workflow that validates `VERSION`, runs static analysis and the full deterministic QA suite, builds checksummed packages, and creates or updates a GitHub Release.
+- Add a permanent latest-Windows-ZIP download name alongside the versioned package and SHA-256 manifests.
+- Add structured, privacy-aware bug and feature request forms that reinforce the local-only, zero-monitoring-cost, single-user contract.
+- Document the single-instance design, recovery behavior, release pipeline, and issue-reporting privacy boundary.
+
 ## 3.3.0 - 2026-07-28
 
 ### Usage Saver

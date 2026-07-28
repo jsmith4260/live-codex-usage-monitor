@@ -1,0 +1,99 @@
+name: Publish Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate release tag
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match VERSION $version."
+          }
+
+      - name: Static analysis
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $modulePath = (Get-Module PSScriptAnalyzer -ListAvailable |
+            Sort-Object Version -Descending |
+            Select-Object -First 1).Path
+          & .\Invoke-StaticAnalysis.ps1 -ModulePath $modulePath
+
+      - name: Test and build
+        shell: powershell
+        run: .\Build-Release.ps1
+
+      - name: Prepare stable download and release notes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
+          $versionedZip = ".\artifacts\live-codex-usage-monitor-$version.zip"
+          $stableZip = '.\artifacts\live-codex-usage-monitor-windows.zip'
+          Copy-Item -LiteralPath $versionedZip -Destination $stableZip -Force
+          $stableHash = Get-FileHash -LiteralPath $stableZip -Algorithm SHA256
+          $stableManifest = '{0} *{1}' -f $stableHash.Hash.ToLowerInvariant(), (Split-Path -Leaf $stableZip)
+          Set-Content -LiteralPath "$stableZip.sha256" -Value $stableManifest -Encoding Ascii
+
+          $lines = @(Get-Content -LiteralPath .\CHANGELOG.md)
+          $start = -1
+          for ($index = 0; $index -lt $lines.Count; $index++) {
+            if ($lines[$index] -match "^## $([regex]::Escape($version))\s+-\s+") {
+              $start = $index
+              break
+            }
+          }
+          if ($start -lt 0) { throw "Release notes for $version were not found." }
+          $end = $lines.Count
+          for ($index = $start + 1; $index -lt $lines.Count; $index++) {
+            if ($lines[$index] -match '^## \d+\.\d+\.\d+\s+-\s+') {
+              $end = $index
+              break
+            }
+          }
+          $notes = @($lines[($start + 1)..($end - 1)]) -join [Environment]::NewLine
+          Set-Content -LiteralPath .\artifacts\release-notes.md -Value $notes.Trim() -Encoding UTF8
+
+      - name: Publish GitHub Release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content -LiteralPath .\VERSION -Raw).Trim()
+          $tag = $env:GITHUB_REF_NAME
+          $assets = @(
+            ".\artifacts\live-codex-usage-monitor-$version.zip"
+            ".\artifacts\live-codex-usage-monitor-$version.zip.sha256"
+            '.\artifacts\live-codex-usage-monitor-windows.zip'
+            '.\artifacts\live-codex-usage-monitor-windows.zip.sha256'
+          )
+          & gh release view $tag --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            & gh release upload $tag @assets --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
+            & gh release edit $tag --latest --title "Live Codex Usage Monitor $version" `
+              --notes-file .\artifacts\release-notes.md
+          }
+          else {
+            & gh release create $tag @assets --verify-tag --latest `
+              --title "Live Codex Usage Monitor $version" `
+              --notes-file .\artifacts\release-notes.md
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed.' }

@@ -1,7 +1,7 @@
 # Live Codex Usage Monitor
 
 [![Windows tests](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml/badge.svg)](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml)
-![Version 3.3.0](https://img.shields.io/badge/version-3.3.0-00b7c3)
+![Version 3.4.0](https://img.shields.io/badge/version-3.4.0-00b7c3)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078d4)
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391fe)
 ![Local only](https://img.shields.io/badge/privacy-local--only-22c55e)
@@ -11,7 +11,8 @@ usage-efficiency companion.** It turns the Codex logs already on your computer
 into a live WinForms dashboard without calling ChatGPT, using an API key, or
 creating any additional paid usage.
 
-[Download the current source ZIP](https://github.com/jsmith4260/live-codex-usage-monitor/archive/refs/heads/main.zip)
+[Download the latest Windows ZIP](https://github.com/jsmith4260/live-codex-usage-monitor/releases/latest/download/live-codex-usage-monitor-windows.zip)
+· [Browse the source](https://github.com/jsmith4260/live-codex-usage-monitor)
 · [View the changelog](CHANGELOG.md)
 · [Review the privacy model](SECURITY.md)
 
@@ -28,18 +29,21 @@ view of Codex usage while keeping personal activity on the same computer.
 | Quota awareness | Independent short- and long-window meters, reset times, pace, warnings, and an optional usage guard |
 | Usage Saver | Prompt-cache efficiency, fresh-task break-even advice, compaction health, and reversible Saver/Balanced/Quality profiles |
 | History | Today, 7-day, 30-day, all-available, or any custom inclusive date range |
+| Windows reliability | Single-instance launch behavior, tray restoration, hidden-console launchers, sanitized diagnostics, and local backup/restore |
 | Personal ChatGPT coverage | Manual, local comparison of a downloaded single-user report for web, desktop, Excel, and PowerPoint activity |
 | Cost context | Clearly labeled Codex credit estimates, API-equivalent rates where known, and user-configured spending parameters |
 | Privacy | No account polling, cookies, telemetry upload, prompt storage, network service, or monitoring-generated ChatGPT cost |
 
 ## Quick start
 
-1. [Download the ZIP](https://github.com/jsmith4260/live-codex-usage-monitor/archive/refs/heads/main.zip) and extract it.
+1. [Download the latest Windows ZIP](https://github.com/jsmith4260/live-codex-usage-monitor/releases/latest/download/live-codex-usage-monitor-windows.zip) and extract it.
 2. Double-click `Start-Live-Codex-Usage.cmd`.
 3. Use **Control center** to open Trends, Saver, RTK health, Cost, Compare, Usage guard, Sources, and Settings.
 
 There is no installer, account sign-in, API key, or runtime package download.
 The project runs on Windows PowerShell 5.1 or newer.
+Starting either launcher again restores the existing monitor window instead of
+creating a duplicate process.
 
 To install with Git instead:
 
@@ -123,6 +127,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 # Disable RTK health checks for this launch, or point to an approved RTK binary
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -DisableRtkIntegration
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -RtkExecutablePath C:\ApprovedTools\rtk.exe
+
+# Controlled troubleshooting only: bypass normal per-user single-instance behavior
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -AllowMultipleInstances
 ```
 
 ## What it tracks
@@ -143,6 +150,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 - OK/WARN/CRITICAL status, a matching color meter, quota reset countdowns, and an even-pace comparison when the log supplies a window duration.
 - Privacy-safe daily CSV export through **Export CSV**.
 - A system-tray menu with dashboard, mini-mode, Control Center, and exit actions.
+- Per-user single-instance coordination that restores the existing tray/dashboard window when a launcher is run again.
 
 ## Control Center
 
@@ -167,6 +175,7 @@ Downloaded reporting is not real-time. Workspace Analytics normally refreshes in
 See [offline cost, reconciliation, and guard details](docs/OFFLINE-COST-RECONCILIATION-GUARD.md).
 See [RTK savings and health](docs/RTK-SAVINGS-AND-HEALTH.md) for exact measurement and failure-state semantics.
 See [Usage Saver and efficiency](docs/USAGE-SAVER-AND-EFFICIENCY.md) for savings labels, profiles, schema checks, the local policy, and rollback boundaries.
+See [Windows reliability and distribution](docs/WINDOWS-RELIABILITY-AND-DISTRIBUTION.md) for single-instance behavior, launchers, releases, and issue privacy.
 
 ## Reading the dashboard
 
@@ -256,7 +265,7 @@ The test wrapper uses deterministic local fixtures, checks child exit codes, ver
 & .\Build-Release.ps1
 ```
 
-The build parses every PowerShell file, runs the full QA suite, and creates a versioned ZIP plus SHA-256 manifest under `artifacts`. GitHub Actions performs the same validation and publishes the package as a workflow artifact.
+The build parses every PowerShell file, runs the full QA suite, and creates a versioned ZIP plus SHA-256 manifest under `artifacts`. GitHub Actions performs the same validation and publishes the package as a workflow artifact. A matching `vX.Y.Z` tag additionally runs the release workflow and publishes versioned and stable-name assets to GitHub Releases.
 
 ## Feedback and contributions
 

@@ -17,6 +17,7 @@ $reconciliationModule = Join-Path $scriptDir 'Live-Codex-Usage-Reconciliation.ps
 $officialFixture = Join-Path $scriptDir 'tests\fixtures\official-usage-snapshot.csv'
 $storeModule = Join-Path $scriptDir 'Live-Codex-Usage-Store.psm1'
 $guardModule = Join-Path $scriptDir 'Live-Codex-Usage-Guard.psm1'
+$instanceModule = Join-Path $scriptDir 'Live-Codex-Usage-Instance.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
 $personalModule = Join-Path $scriptDir 'Live-Codex-Usage-Personal.psm1'
 $rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
@@ -87,7 +88,40 @@ Invoke-MonitorTest -Name 'Compliance dialog construction' -Arguments @(
 ) -ExpectedPattern 'Compliance dialog constructed successfully; Tabs=4; Rows=2'
 Invoke-MonitorTest -Name 'Control center construction' -Arguments @(
     '-InsightsUiSmokeTest', '-OfficialSnapshotPath', $officialFixture
-) -ExpectedPattern 'Control center constructed successfully; Tabs=9; TrendRows=2; Models=2'
+) -ExpectedPattern 'Control center constructed successfully; Tabs=9; TrendRows=2; Models=2; Instance=INFO'
+
+Write-Host '  Per-user single-instance activation and recovery'
+Import-Module -Name $instanceModule -Force
+$instanceScope = 'fixture-user-{0}' -f [guid]::NewGuid().ToString('N')
+$primaryInstance = $null
+$secondaryInstance = $null
+$recoveredInstance = $null
+try {
+    $instanceNames = Get-MonitorInstanceObjectNames -ScopeSeed $instanceScope
+    if (($instanceNames | ConvertTo-Json) -match [regex]::Escape($instanceScope)) {
+        throw 'Single-instance object names exposed the scope seed.'
+    }
+    $primaryInstance = New-MonitorInstanceCoordinator -ScopeSeed $instanceScope
+    $secondaryInstance = New-MonitorInstanceCoordinator -ScopeSeed $instanceScope
+    if (-not $primaryInstance.IsPrimary -or $secondaryInstance.IsPrimary -or
+        -not $secondaryInstance.ActivationRequested -or
+        -not (Test-MonitorInstanceActivation -Coordinator $primaryInstance)) {
+        throw 'A second launch did not signal the existing monitor instance.'
+    }
+    Close-MonitorInstanceCoordinator -Coordinator $secondaryInstance
+    $secondaryInstance = $null
+    Close-MonitorInstanceCoordinator -Coordinator $primaryInstance
+    $primaryInstance = $null
+    $recoveredInstance = New-MonitorInstanceCoordinator -ScopeSeed $instanceScope
+    if (-not $recoveredInstance.IsPrimary) {
+        throw 'Single-instance ownership was not recoverable after shutdown.'
+    }
+}
+finally {
+    Close-MonitorInstanceCoordinator -Coordinator $secondaryInstance
+    Close-MonitorInstanceCoordinator -Coordinator $primaryInstance
+    Close-MonitorInstanceCoordinator -Coordinator $recoveredInstance
+}
 
 Write-Host '  Offline rate-card estimates'
 Import-Module -Name $costModule -Force

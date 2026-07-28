@@ -27,6 +27,20 @@ if ($readmeText -notmatch [regex]::Escape("![Version $version]")) {
 if ($changelogText -notmatch "(?m)^## $([regex]::Escape($version))\s+-\s+") {
     throw "CHANGELOG does not contain a release heading for VERSION ($version)."
 }
+if ($readmeText -notmatch 'releases/latest/download/live-codex-usage-monitor-windows\.zip') {
+    throw 'README does not contain the stable latest Windows release download.'
+}
+
+$releaseWorkflowPath = Join-Path $scriptDir '.github\workflows\release.yml'
+if (-not (Test-Path -LiteralPath $releaseWorkflowPath -PathType Leaf)) {
+    throw 'The tag-driven GitHub Release workflow is missing.'
+}
+$releaseWorkflowText = Get-Content -LiteralPath $releaseWorkflowPath -Raw
+if ($releaseWorkflowText -notmatch 'contents:\s*write' -or
+    $releaseWorkflowText -notmatch 'live-codex-usage-monitor-windows\.zip' -or
+    $releaseWorkflowText -notmatch 'gh release') {
+    throw 'The GitHub Release workflow does not satisfy the stable-download contract.'
+}
 
 $localReadmeTargets = [regex]::Matches($readmeText, '\]\((?<target>[^)]+)\)') |
     ForEach-Object { $_.Groups['target'].Value.Trim() } |
@@ -77,6 +91,7 @@ $releaseItems = @(
     'Live-Codex-Usage-Cost.psm1',
     'Live-Codex-Usage-Efficiency.psm1',
     'Live-Codex-Usage-Guard.psm1',
+    'Live-Codex-Usage-Instance.psm1',
     'Live-Codex-Usage-Personal.psm1',
     'Live-Codex-Usage-Privacy.psm1',
     'Live-Codex-Usage-RTK.psm1',

@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible problem in the Windows monitor.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Live Codex Usage Monitor.
+
+        Do not attach Codex JSONL files, ChatGPT exports, prompts, responses, account identifiers, credentials, screenshots containing personal data, or paths containing your Windows username. Use the sanitized diagnostic export from Control Center > Settings when diagnostics are relevant.
+  - type: input
+    id: version
+    attributes:
+      label: Monitor version
+      description: Find this in Control Center > Sources or the VERSION file.
+      placeholder: "3.4.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows version
+      options:
+        - Windows 11
+        - Windows 10
+        - Windows Server
+        - Other supported Windows environment
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected area
+      options:
+        - Main dashboard
+        - Mini mode or system tray
+        - Date ranges or history
+        - Usage Saver
+        - RTK health
+        - Cost or downloaded-report comparison
+        - Usage guard
+        - Personal settings, backup, or startup
+        - Launcher or release package
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the visible behavior without including private content.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open...
+        2. Select...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed prompts, responses, identifiers, credentials, personal paths, and raw logs from this report.
+          required: true

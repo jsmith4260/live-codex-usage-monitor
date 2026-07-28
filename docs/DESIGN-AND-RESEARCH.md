@@ -66,6 +66,12 @@ The version 3 interface follows current Microsoft Windows guidance while remaini
 - logical tab order, mnemonics, shortcuts, focusable standard controls, accessible names/descriptions, and DPI-aware sizing;
 - text tables paired with custom charts/heatmaps so visual encodings are not the only way to read values.
 
+Version 3.4 also adopts per-user single-instance coordination. A named,
+access-controlled mutex prevents duplicate interactive monitors, while a named
+auto-reset event asks the existing tray/dashboard process to restore its
+window. Automated QA modes remain isolated and do not participate in the
+interactive-instance lock.
+
 Official references:
 
 - [Windows design guidelines](https://learn.microsoft.com/en-us/windows/apps/design/guidelines-overview)
@@ -73,6 +79,8 @@ Official references:
 - [Windows keyboard interactions](https://learn.microsoft.com/en-us/windows/apps/develop/input/keyboard-interactions)
 - [Windows Forms accessibility properties](https://learn.microsoft.com/en-us/dotnet/desktop/winforms/advanced/properties-on-windows-forms-controls-that-support-accessibility-guidelines)
 - [Accessible text requirements](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/accessible-text-requirements)
+- [Named EventWaitHandle synchronization](https://learn.microsoft.com/en-us/dotnet/standard/threading/eventwaithandle)
+- [Windows Forms Form.Activate behavior](https://learn.microsoft.com/en-us/dotnet/api/system.windows.forms.form.activate)
 
 ## Official report-format sources
 

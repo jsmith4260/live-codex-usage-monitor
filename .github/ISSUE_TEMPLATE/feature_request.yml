@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest a local-only, single-user improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The project accepts ideas that preserve its local-only, zero-monitoring-cost, single-user privacy contract. Features that require account credentials, private endpoint polling, browser-cookie inspection, or transmitting personal activity will not be implemented.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What personal monitoring or efficiency problem are you experiencing?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+      description: Describe the workflow or result you would find useful.
+    validations:
+      required: true
+  - type: dropdown
+    id: data
+    attributes:
+      label: Required data source
+      options:
+        - Existing local Codex logs
+        - Existing local aggregate monitor state
+        - A manually selected single-user report
+        - Local Windows or RTK state
+        - No additional data
+        - Unsure
+    validations:
+      required: true
+  - type: checkboxes
+    id: contract
+    attributes:
+      label: Product contract
+      options:
+        - label: This idea can work without creating ChatGPT/API usage or any other OpenAI charge.
+          required: true
+        - label: This idea can keep personal usage data on the user's computer.
+          required: true
+        - label: This idea is intended for one person tracking themselves.
+          required: true

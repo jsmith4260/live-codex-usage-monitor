@@ -31,6 +31,17 @@ Saver/Balanced/Quality profiles change only `model_reasoning_effort` and `model_
 
 The rollback file contains only prior presence/value metadata for the three allowlisted efficiency keys; the full Codex configuration is never copied into monitor state or a personal backup. The optional output-budget policy modifies only one exact marked block in the current user's Codex instructions, requires affirmative installation/removal, and refuses unbalanced markers.
 
+## Single-instance boundary
+
+Interactive launches use a current-user named mutex and auto-reset activation
+event. Their names contain only a truncated SHA-256 fingerprint of the current
+Windows security identifier, never the identifier itself. Windows
+access-control rules grant synchronization access only to that identity.
+
+The names are not persisted, displayed, included in diagnostics, or
+transmitted. A second launch can only request that the existing local window be
+shown; it cannot send content, commands, paths, or configuration values.
+
 ## Cost and downloaded-data boundary
 
 The bundled rate card is a dated static snapshot. Unknown models are unpriced. API-equivalent USD is not a bill, and cash estimates require user-supplied contract parameters. Reconciliation reads only a local CSV/JSON selected or placed by the user; it never signs in or reads browser cookies.
