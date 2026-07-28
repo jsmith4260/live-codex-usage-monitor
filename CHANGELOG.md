@@ -24,6 +24,13 @@
 - Extend zero-outbound, aggregate-shape, parser, module, UI-construction, profile/repair/rollback, policy install/remove, quota, cache, schema, and compaction tests.
 - Expand the Control Center to nine responsive tabs and include the efficiency module in release packaging.
 
+### Project discoverability
+
+- Redesign the README opening around a one-minute Windows quick start, clear search terms, current feature coverage, and explicit privacy boundaries.
+- Publish deterministic dashboard and Usage Saver screenshots that contain fixture data only.
+- Add CI, version, platform, PowerShell, and local-only badges plus a direct source download and feedback path.
+- Make the release build reject a stale README version badge, missing changelog heading, or broken local README link.
+
 ## 3.2.0 - 2026-07-28
 
 ### Personal coverage

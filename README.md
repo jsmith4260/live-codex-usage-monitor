@@ -1,6 +1,53 @@
 # Live Codex Usage Monitor
 
-An offline, single-user Windows dashboard for understanding and reducing your own local Codex usage. It reads data already stored on your workstation, then presents fresh token burn, replayed context, independent quota windows, prompt-cache efficiency, fresh-task break-even advice, schema and compaction health, local tool activity, RTK savings, trends, dated credit estimates, reversible efficiency profiles, downloaded-report comparison, personal reliability settings, and an opt-in usage guard.
+[![Windows tests](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml/badge.svg)](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml)
+![Version 3.3.0](https://img.shields.io/badge/version-3.3.0-00b7c3)
+![Windows](https://img.shields.io/badge/platform-Windows-0078d4)
+![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391fe)
+![Local only](https://img.shields.io/badge/privacy-local--only-22c55e)
+
+**A local-only Windows Codex usage monitor, token tracker, quota dashboard, and
+usage-efficiency companion.** It turns the Codex logs already on your computer
+into a live WinForms dashboard without calling ChatGPT, using an API key, or
+creating any additional paid usage.
+
+[Download the current source ZIP](https://github.com/jsmith4260/live-codex-usage-monitor/archive/refs/heads/main.zip)
+· [View the changelog](CHANGELOG.md)
+· [Review the privacy model](SECURITY.md)
+
+![Live Codex Usage Monitor dashboard showing quota, token events, tasks, integrations, and sanitized activity](docs/images/dashboard-v3.3.png)
+
+## Why use it?
+
+Live Codex Usage Monitor is built for an individual who wants a native Windows
+view of Codex usage while keeping personal activity on the same computer.
+
+| Capability | What you get |
+| --- | --- |
+| Live usage | Fresh input, output, reasoning, cached context, task health, and model mix from local Codex JSONL |
+| Quota awareness | Independent short- and long-window meters, reset times, pace, warnings, and an optional usage guard |
+| Usage Saver | Prompt-cache efficiency, fresh-task break-even advice, compaction health, and reversible Saver/Balanced/Quality profiles |
+| History | Today, 7-day, 30-day, all-available, or any custom inclusive date range |
+| Personal ChatGPT coverage | Manual, local comparison of a downloaded single-user report for web, desktop, Excel, and PowerPoint activity |
+| Cost context | Clearly labeled Codex credit estimates, API-equivalent rates where known, and user-configured spending parameters |
+| Privacy | No account polling, cookies, telemetry upload, prompt storage, network service, or monitoring-generated ChatGPT cost |
+
+## Quick start
+
+1. [Download the ZIP](https://github.com/jsmith4260/live-codex-usage-monitor/archive/refs/heads/main.zip) and extract it.
+2. Double-click `Start-Live-Codex-Usage.cmd`.
+3. Use **Control center** to open Trends, Saver, RTK health, Cost, Compare, Usage guard, Sources, and Settings.
+
+There is no installer, account sign-in, API key, or runtime package download.
+The project runs on Windows PowerShell 5.1 or newer.
+
+To install with Git instead:
+
+```powershell
+git clone https://github.com/jsmith4260/live-codex-usage-monitor.git
+Set-Location .\live-codex-usage-monitor
+& .\Start-Live-Codex-Usage.ps1
+```
 
 ## Purpose
 
@@ -27,7 +74,7 @@ Use this monitor to understand the shape of local Codex work without creating mo
 - The optional persistent history under `%LOCALAPPDATA%\LiveCodexUsageMonitor` contains dates and aggregate counters only. It never contains prompts, responses, session names, account identifiers, or source paths. Use `-DisablePersistence` to turn it off.
 - `Test-ZeroOutbound.ps1` is a release gate that rejects outbound-request APIs in production PowerShell sources.
 
-## Start it
+## Launch options
 
 - Full dashboard by double-click: `Start-Live-Codex-Usage.cmd`
 - Mini always-visible view by double-click: `Start-Live-Codex-Usage-Mini.cmd`
@@ -110,6 +157,8 @@ Open **Control center** or press `Ctrl+I`.
 - **Usage guard**: disabled by default. Advisory mode warns; explicitly approved Enforced mode stops only exact user-approved Codex executable paths after a grace period.
 - **Sources**: provenance, model mix, state locations, and the privacy/zero-cost contract.
 - **Settings**: personal backup/restore, start-at-sign-in, sanitized diagnostics, RTK coverage, and guard reliability.
+
+![Usage Saver workspace showing independent quota windows, cache efficiency, configuration profiles, and reliability checks](docs/images/usage-saver-v3.3.png)
 
 The bundled rate card is dated. Unknown model names remain unpriced; the app never guesses a fallback unless you explicitly configure one. Fast or special service tiers can use a user-supplied multiplier. Actual dollars are shown only after you provide your own dollars-per-credit, included-credit, fixed-cost, and billing-cycle parameters.
 
@@ -208,3 +257,10 @@ The test wrapper uses deterministic local fixtures, checks child exit codes, ver
 ```
 
 The build parses every PowerShell file, runs the full QA suite, and creates a versioned ZIP plus SHA-256 manifest under `artifacts`. GitHub Actions performs the same validation and publishes the package as a workflow artifact.
+
+## Feedback and contributions
+
+Bug reports, feature ideas, accessibility feedback, and Windows compatibility
+reports are welcome in [GitHub Issues](https://github.com/jsmith4260/live-codex-usage-monitor/issues).
+Please do not attach personal Codex logs, prompts, responses, account exports, or
+other sensitive data to an issue.

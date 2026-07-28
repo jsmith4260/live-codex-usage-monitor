@@ -15,6 +15,35 @@ if (-not (Test-Path -LiteralPath $versionPath -PathType Leaf)) { throw 'VERSION 
 $version = (Get-Content -LiteralPath $versionPath -Raw).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION is not semantic: $version" }
 
+$readmePath = Join-Path $scriptDir 'README.md'
+$changelogPath = Join-Path $scriptDir 'CHANGELOG.md'
+if (-not (Test-Path -LiteralPath $readmePath -PathType Leaf)) { throw 'README.md is missing.' }
+if (-not (Test-Path -LiteralPath $changelogPath -PathType Leaf)) { throw 'CHANGELOG.md is missing.' }
+$readmeText = Get-Content -LiteralPath $readmePath -Raw
+$changelogText = Get-Content -LiteralPath $changelogPath -Raw
+if ($readmeText -notmatch [regex]::Escape("![Version $version]")) {
+    throw "README version badge does not match VERSION ($version)."
+}
+if ($changelogText -notmatch "(?m)^## $([regex]::Escape($version))\s+-\s+") {
+    throw "CHANGELOG does not contain a release heading for VERSION ($version)."
+}
+
+$localReadmeTargets = [regex]::Matches($readmeText, '\]\((?<target>[^)]+)\)') |
+    ForEach-Object { $_.Groups['target'].Value.Trim() } |
+    Where-Object {
+        $_ -and
+        $_ -notmatch '^(?:https?:|mailto:|#)' -and
+        $_ -notmatch '^\s*<'
+    } |
+    ForEach-Object { ($_ -split '#', 2)[0] } |
+    Sort-Object -Unique
+foreach ($target in $localReadmeTargets) {
+    $targetPath = Join-Path $scriptDir ($target -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $targetPath)) {
+        throw "README local link target is missing: $target"
+    }
+}
+
 $parseErrors = [System.Collections.Generic.List[string]]::new()
 foreach ($file in Get-ChildItem -LiteralPath $scriptDir -Recurse -File | Where-Object {
     $_.Extension -in @('.ps1', '.psm1') -and $_.FullName -notmatch '[\\/]artifacts[\\/]'
