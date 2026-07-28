@@ -5,6 +5,7 @@
 ### Release pipeline
 
 - Make the GitHub Release existence probe non-terminating under Windows PowerShell while preserving hard failures for release creation, asset upload, and release editing.
+- Reuse an installed pinned PSScriptAnalyzer or retry its PowerShell Gallery installation with TLS 1.2, avoiding transient runner failures while retaining a hard static-analysis gate.
 - Publish the completed Windows Reliability & Distribution phase without rewriting the already-pushed `v3.4.0` tag from its failed publication attempt.
 
 ## 3.4.0 - 2026-07-28

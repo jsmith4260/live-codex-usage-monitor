@@ -20,10 +20,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-          $modulePath = (Get-Module PSScriptAnalyzer -ListAvailable |
-            Sort-Object Version -Descending |
-            Select-Object -First 1).Path
+          $modulePath = & .\Install-PSScriptAnalyzer.ps1
           & .\Invoke-StaticAnalysis.ps1 -ModulePath $modulePath
 
       - name: Parse and run deterministic QA

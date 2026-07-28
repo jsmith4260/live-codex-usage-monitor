@@ -14,6 +14,7 @@ $runtimeFiles = @(
                 'Test-Live-Codex-Usage.ps1',
                 'Test-ZeroOutbound.ps1',
                 'Build-Release.ps1',
+                'Install-PSScriptAnalyzer.ps1',
                 'Invoke-StaticAnalysis.ps1',
                 'Live-Codex-Usage-Privacy.psm1'
             )
