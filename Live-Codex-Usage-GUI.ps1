@@ -72,6 +72,8 @@ param(
     [string]$ComplianceInputPath = '',
     [string]$ComplianceMappingPath = '',
     [switch]$InsightsUiSmokeTest,
+    [switch]$PerformanceSmokeTest,
+    [switch]$CatalogExpansionSmokeTest,
     [ValidateRange(0, 5)]
     [int]$InsightsTabIndex = 0,
     [string]$CaptureScreenshotPath = ''
@@ -151,6 +153,14 @@ $script:viewMode = $InitialView
 $script:notifyIcon = $null
 $script:isMiniMode = $false
 $script:isRefreshing = $false
+$script:isScanning = $false
+$script:mainForm = $null
+$script:mainStatusLabel = $null
+$script:mainAccentColor = $null
+$script:usageRevision = [int64]0
+$script:activityRevision = [int64]0
+$script:lastRenderKey = ''
+$script:lastCostKey = ''
 $script:startedAt = Get-Date
 $script:rangeStart = (Get-Date).AddHours(-$HistoryHours)
 $script:rangeEnd = [datetime]::MaxValue
@@ -171,6 +181,8 @@ if (-not [string]::IsNullOrWhiteSpace($ToDate)) {
 if ($script:rangeStart -gt $script:rangeEnd) {
     throw 'The From date must be before or equal to the To date.'
 }
+$script:catalogRangeStart = $script:rangeStart
+$script:catalogRangeEnd = $script:rangeEnd
 
 function Format-Tokens {
     param([int64]$Value)
@@ -321,23 +333,22 @@ function Update-SessionInfo {
     param([string]$Line, [string]$SourceFile)
 
     if ($Line -notmatch 'session_meta|turn_context') { return }
-    try { $record = $Line | ConvertFrom-Json -ErrorAction Stop } catch { return }
-    $recordType = [string](Get-ObjectProperty -Object $record -Name 'type')
-    if ($recordType -ne 'session_meta' -and $recordType -ne 'turn_context') { return }
-    $payload = Get-ObjectProperty -Object $record -Name 'payload'
-    if ($null -eq $payload) { return }
-
     $info = Get-SessionInfoRecord -SourceFile $SourceFile
-    if ($recordType -eq 'session_meta') {
-        $info.ContextWindow = Get-ShortValue (Get-ObjectProperty -Object $payload -Name 'context_window')
+    if ($Line -match '"type":"session_meta"') {
+        if ($Line -match '"context_window":(?:"([^"]+)"|([0-9]+))') {
+            $info.ContextWindow = Get-ShortValue $(if ($Matches[1]) { $Matches[1] } else { $Matches[2] })
+        }
     }
-    else {
-        $info.Model = Get-ShortValue (Get-ObjectProperty -Object $payload -Name 'model')
-        $info.Effort = Get-ShortValue (Get-ObjectProperty -Object $payload -Name 'effort')
-        $info.ApprovalPolicy = Get-ShortValue (Get-ObjectProperty -Object $payload -Name 'approval_policy')
-        $info.ApprovalsReviewer = Get-ShortValue (Get-ObjectProperty -Object $payload -Name 'approvals_reviewer')
-        $info.Sandbox = Get-ShortValue (Get-ObjectProperty -Object $payload -Name 'sandbox_policy')
+    elseif ($Line -match '"type":"turn_context"') {
+        if ($Line -match '"model":"([^"]+)"') { $info.Model = Get-ShortValue $Matches[1] }
+        if ($Line -match '"effort":"([^"]+)"') { $info.Effort = Get-ShortValue $Matches[1] }
+        if ($Line -match '"approval_policy":"([^"]+)"') { $info.ApprovalPolicy = Get-ShortValue $Matches[1] }
+        if ($Line -match '"approvals_reviewer":"([^"]+)"') { $info.ApprovalsReviewer = Get-ShortValue $Matches[1] }
+        if ($Line -match '"sandbox_policy":(?:"([^"]+)"|\{"type":"([^"]+)")') {
+            $info.Sandbox = Get-ShortValue $(if ($Matches[1]) { $Matches[1] } else { $Matches[2] })
+        }
     }
+    else { return }
     $info.UpdatedAt = Get-Date
 }
 
@@ -425,28 +436,63 @@ function Get-NewLogLines {
     $state.Offset = [int64]$newOffset
     if ([string]::IsNullOrEmpty($text)) { return @() }
     $combined = [string]$state.Remainder + $text
-    $parts = @($combined -split "`r?`n")
-    if ($combined.EndsWith("`n")) {
-        $state.Remainder = ''
-        if ($parts.Count -gt 0 -and $parts[-1] -eq '') {
-            $parts = @($parts | Select-Object -First ($parts.Count - 1))
+    $lineStart = 0
+    while ($lineStart -lt $combined.Length) {
+        $lineEnd = $combined.IndexOf("`n", $lineStart)
+        if ($lineEnd -lt 0) { break }
+        $lineLength = $lineEnd - $lineStart
+        if ($lineLength -gt 0 -and $combined[$lineEnd - 1] -eq "`r") {
+            $lineLength--
         }
+        if ($lineLength -gt 0) {
+            Write-Output $combined.Substring($lineStart, $lineLength)
+        }
+        $lineStart = $lineEnd + 1
+    }
+    $state.Remainder = if ($lineStart -lt $combined.Length) {
+        $combined.Substring($lineStart)
     }
     else {
-        $state.Remainder = if ($parts.Count -gt 0) { [string]$parts[-1] } else { $combined }
-        if ($parts.Count -gt 1) {
-            $parts = @($parts | Select-Object -First ($parts.Count - 1))
-        }
-        else {
-            $parts = @()
-        }
+        ''
     }
-    return $parts
 }
 
 function Test-InSelectedRange {
     param([datetime]$At)
     return ($At -ge $script:rangeStart -and $At -le $script:rangeEnd)
+}
+
+function Get-LineLocalTimestamp {
+    param([string]$Line)
+
+    $marker = '"timestamp":"'
+    $valueStart = $Line.IndexOf($marker, [System.StringComparison]::Ordinal)
+    if ($valueStart -lt 0) { return $null }
+    $valueStart += $marker.Length
+    $valueEnd = $Line.IndexOf('"', $valueStart)
+    if ($valueEnd -le $valueStart) { return $null }
+    try {
+        return [datetimeoffset]::Parse(
+            $Line.Substring($valueStart, ($valueEnd - $valueStart)),
+            [System.Globalization.CultureInfo]::InvariantCulture
+        ).LocalDateTime
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-LineTimestampInSelectedRange {
+    param([string]$Line)
+
+    # Rollout records place an ISO timestamp near the beginning of each JSONL
+    # line. Checking that small value before ConvertFrom-Json avoids expensive
+    # deserialization of old records in long-running session files that were
+    # modified recently. Lines without a readable timestamp remain eligible so
+    # forward-compatible records are never silently discarded.
+    $at = Get-LineLocalTimestamp -Line $Line
+    if ($null -eq $at) { return $true }
+    return Test-InSelectedRange -At $at
 }
 
 function Format-DateRange {
@@ -513,7 +559,7 @@ function Get-RiskLabel {
 }
 
 function Convert-TokenEvent {
-    param([string]$Line, [string]$SourceFile)
+    param([string]$Line, [string]$SourceFile, [string]$EventId = '')
 
     if ($Line -notmatch 'token_count') { return $null }
     try { $record = $Line | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
@@ -532,11 +578,13 @@ function Convert-TokenEvent {
     $reasoning = Get-Number (Get-ObjectProperty -Object $usage -Name 'reasoning_output_tokens')
     $newInput = [Math]::Max([int64]0, $inputTokens - $cached)
     $total = Get-Number (Get-ObjectProperty -Object $usage -Name 'total_tokens')
-    $eventId = Get-LineFingerprint -Line $Line -SourceFile $SourceFile
+    if ([string]::IsNullOrWhiteSpace($EventId)) {
+        $EventId = Get-LineFingerprint -Line $Line -SourceFile $SourceFile
+    }
     $rateLimits = Get-ObjectProperty -Object $payload -Name 'rate_limits'
 
     $usageEvent = [pscustomobject]@{
-        EventId   = $eventId
+        EventId   = $EventId
         At        = $at
         Total     = $total
         Input     = $inputTokens
@@ -557,70 +605,61 @@ function Convert-TokenEvent {
 }
 
 function Convert-ActivityEvent {
-    param([string]$Line, [string]$SourceFile)
+    param([string]$Line, [string]$SourceFile, [string]$EventId = '')
 
     if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
-    try { $record = $Line | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
-
-    $at = Get-Date
-    try { $at = [datetimeoffset]::Parse([string](Get-ObjectProperty -Object $record -Name 'timestamp')).LocalDateTime } catch { }
+    $at = Get-LineLocalTimestamp -Line $Line
+    if ($null -eq $at) { $at = Get-Date }
 
     $label = 'LOG'
     $detail = 'local rollout event'
-    $recordType = [string](Get-ObjectProperty -Object $record -Name 'type')
-    $payloadType = ''
-    $payload = Get-ObjectProperty -Object $record -Name 'payload'
-    if ($null -ne $payload) {
-        $payloadType = [string](Get-ObjectProperty -Object $payload -Name 'type')
-    }
 
-    if ($recordType -eq 'turn_context') {
+    # Activity rows need only a sanitized type and timestamp. Classifying from
+    # the compact JSON text avoids deserializing large prompt, response, and
+    # tool-output payloads that are intentionally never displayed.
+    if ($Line -match '"type":"turn_context"') {
         $label = 'CTX'
         $detail = 'context packaged for a turn'
     }
-    elseif ($recordType -eq 'event_msg' -and $payloadType -eq 'token_count') {
+    elseif ($Line -match '"type":"event_msg"' -and $Line -match '"type":"token_count"') {
         $label = 'TOKEN'
         $detail = 'usage counters updated'
     }
-    elseif ($recordType -eq 'event_msg' -and $payloadType -eq 'user_message') {
+    elseif ($Line -match '"type":"event_msg"' -and $Line -match '"type":"user_message"') {
         $label = 'ASK'
         $detail = 'user request received'
     }
-    elseif ($recordType -eq 'event_msg' -and ($payloadType -match 'exec|command|run')) {
+    elseif ($Line -match '"type":"event_msg"' -and $Line -match '"type":"[^"]*(?:exec|command|run)[^"]*"') {
         $label = 'RUN'
-        $detail = "event: $payloadType"
+        $detail = 'command activity recorded'
     }
-    elseif ($recordType -eq 'event_msg' -and ($payloadType -match 'patch|edit|file')) {
+    elseif ($Line -match '"type":"event_msg"' -and $Line -match '"type":"[^"]*(?:patch|edit|file)[^"]*"') {
         $label = 'EDIT'
-        $detail = "event: $payloadType"
+        $detail = 'file activity recorded'
     }
-    elseif ($recordType -eq 'event_msg' -and ($payloadType -match 'error|failed|abort')) {
+    elseif ($Line -match '"type":"event_msg"' -and $Line -match '"type":"[^"]*(?:error|failed|abort)[^"]*"') {
         $label = 'ERR'
-        $detail = "event: $payloadType"
+        $detail = 'error activity recorded'
     }
-    elseif ($recordType -eq 'event_msg' -and $payloadType) {
-        $label = 'LOG'
-        $detail = "event: $payloadType"
-    }
-    elseif ($recordType -eq 'response_item' -and ($Line -match 'function_call|tool_call|custom_tool_call')) {
+    elseif ($Line -match '"type":"response_item"' -and ($Line -match 'function_call|tool_call|custom_tool_call')) {
         $label = 'TOOL'
         $detail = 'tool activity recorded'
     }
-    elseif ($recordType -eq 'response_item' -and ($Line -match 'message')) {
+    elseif ($Line -match '"type":"response_item"' -and ($Line -match '"type":"message"')) {
         $label = 'MSG'
         $detail = 'assistant message recorded'
     }
-    elseif ($recordType -eq 'response_item') {
+    elseif ($Line -match '"type":"response_item"') {
         $label = 'OUT'
         $detail = 'assistant output item recorded'
     }
-    elseif ($recordType) {
-        $label = 'LOG'
-        $detail = "record: $recordType"
+
+    if ([string]::IsNullOrWhiteSpace($EventId)) {
+        $EventId = Get-LineFingerprint -Line $Line -SourceFile $SourceFile
     }
 
     [pscustomobject]@{
-        EventId = Get-LineFingerprint -Line $Line -SourceFile $SourceFile
+        EventId = $EventId
         At      = $at
         Label   = $label
         Detail  = $detail
@@ -643,42 +682,37 @@ function Get-IntegrationDisplayName {
 }
 
 function Convert-IntegrationEvent {
-    param([string]$Line, [string]$SourceFile)
+    param([string]$Line, [string]$SourceFile, [string]$EventId = '')
 
     if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
     if ($Line -notmatch 'function_call|custom_tool_call|web_search_call|mcp_tool_call_end') { return $null }
-    try { $record = $Line | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
-
-    $recordType = [string](Get-ObjectProperty -Object $record -Name 'type')
-    $payload = Get-ObjectProperty -Object $record -Name 'payload'
-    $item = Get-ObjectProperty -Object $payload -Name 'item'
-    $obj = if ($null -ne $item) { $item } else { $payload }
-    if ($null -eq $obj) { return $null }
-
-    $payloadType = [string](Get-ObjectProperty -Object $obj -Name 'type')
     $kind = ''
     $rawName = ''
     $display = ''
 
-    if ($recordType -eq 'response_item' -and $payloadType -eq 'function_call') {
+    if ($Line -match '"type":"(?:function_call|custom_tool_call)_output"') {
+        return $null
+    }
+    elseif ($Line -match '"type":"response_item"' -and $Line -match '"type":"function_call"') {
         $kind = 'Function'
-        $rawName = [string](Get-ObjectProperty -Object $obj -Name 'name')
+        if ($Line -match '"name":"([^"]+)"') { $rawName = $Matches[1] }
     }
-    elseif ($recordType -eq 'response_item' -and $payloadType -eq 'custom_tool_call') {
+    elseif ($Line -match '"type":"response_item"' -and $Line -match '"type":"custom_tool_call"') {
         $kind = 'Custom'
-        $rawName = [string](Get-ObjectProperty -Object $obj -Name 'name')
+        if ($Line -match '"name":"([^"]+)"') { $rawName = $Matches[1] }
     }
-    elseif ($recordType -eq 'response_item' -and $payloadType -eq 'web_search_call') {
+    elseif ($Line -match '"type":"response_item"' -and $Line -match '"type":"web_search_call"') {
         $kind = 'Web'
         $rawName = 'web_search'
     }
-    elseif ($recordType -eq 'event_msg' -and $payloadType -eq 'mcp_tool_call_end') {
+    elseif ($Line -match '"type":"event_msg"' -and $Line -match '"type":"mcp_tool_call_end"') {
         $kind = 'MCP'
-        $app = [string](Get-ObjectProperty -Object $obj -Name 'app_name')
-        $action = [string](Get-ObjectProperty -Object $obj -Name 'action_name')
-        if (-not $app) { $app = [string](Get-ValueByName -Object $obj -Name 'server') }
-        if (-not $action) { $action = [string](Get-ValueByName -Object $obj -Name 'name') }
-        if (-not $app) { $app = [string](Get-ValueByName -Object $obj -Name 'connector_id') }
+        $app = ''
+        $action = ''
+        if ($Line -match '"app_name":"([^"]+)"') { $app = $Matches[1] }
+        elseif ($Line -match '"server":"([^"]+)"') { $app = $Matches[1] }
+        elseif ($Line -match '"connector_id":"([^"]+)"') { $app = $Matches[1] }
+        if ($Line -match '"action_name":"([^"]+)"') { $action = $Matches[1] }
         if ($app -and $action) { $rawName = "$app.$action" }
         elseif ($app) { $rawName = $app }
         elseif ($action) { $rawName = $action }
@@ -688,15 +722,17 @@ function Convert-IntegrationEvent {
         return $null
     }
 
-    if ($payloadType -match '_output$') { return $null }
     if ([string]::IsNullOrWhiteSpace($rawName)) { return $null }
     $display = Get-IntegrationDisplayName -Kind $kind -Name $rawName
 
-    $at = Get-Date
-    try { $at = [datetimeoffset]::Parse([string](Get-ObjectProperty -Object $record -Name 'timestamp')).LocalDateTime } catch { }
+    $at = Get-LineLocalTimestamp -Line $Line
+    if ($null -eq $at) { $at = Get-Date }
+    if ([string]::IsNullOrWhiteSpace($EventId)) {
+        $EventId = Get-LineFingerprint -Line $Line -SourceFile $SourceFile
+    }
 
     [pscustomobject]@{
-        EventId = Get-LineFingerprint -Line $Line -SourceFile $SourceFile
+        EventId = $EventId
         At      = $at
         Kind    = $kind
         Name    = $display
@@ -707,6 +743,9 @@ function Convert-IntegrationEvent {
 }
 
 function Update-Events {
+    if ($script:isScanning) { return }
+    $script:isScanning = $true
+    try {
     $availableFiles = @(Get-SessionLogFiles)
     $files = @($availableFiles |
         Where-Object { $_.LastWriteTime -ge $script:rangeStart } |
@@ -719,29 +758,50 @@ function Update-Events {
             $line = $_
             if ([string]::IsNullOrWhiteSpace($line)) { return }
             $script:scanStats.LinesRead++
-            Update-SessionInfo -Line $line -SourceFile $file.FullName
-            Update-TaskTitleFromLine -Line $line -SourceFile $file.FullName
+            if (($script:scanStats.LinesRead % 10) -eq 0 -and
+                $null -ne $script:mainForm -and
+                $script:mainForm.IsHandleCreated -and -not $script:mainForm.IsDisposed) {
+                if (($script:scanStats.LinesRead % 100) -eq 0 -and $null -ne $script:mainStatusLabel) {
+                    $script:mainStatusLabel.Text = 'Status: LOADING LOCAL LOGS ({0:N0} lines scanned)' -f $script:scanStats.LinesRead
+                    $script:mainStatusLabel.ForeColor = $script:mainAccentColor
+                }
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+            if (-not (Test-LineTimestampInSelectedRange -Line $line)) { return }
+            $classificationText = if ($line.Length -gt 8192) { $line.Substring(0, 8192) } else { $line }
+            if ($classificationText -match 'session_meta|turn_context') {
+                Update-SessionInfo -Line $classificationText -SourceFile $file.FullName
+                $script:usageRevision++
+            }
+            if ($ShowPromptTaskTitles -and $classificationText -match 'user_message|\"role\":\"user\"') {
+                Update-TaskTitleFromLine -Line $line -SourceFile $file.FullName
+            }
 
-            $activityFingerprint = Get-LineFingerprint -Line $line -SourceFile $file.FullName
-            if (-not $script:activitySeen.ContainsKey($activityFingerprint)) {
-                $script:activitySeen[$activityFingerprint] = $true
-                $activity = Convert-ActivityEvent -Line $line -SourceFile $file.FullName
+            # Byte offsets already guarantee at-most-once processing between
+            # refreshes. A source-plus-sequence key is sufficient in memory and
+            # avoids creating several SHA-256 objects for every JSONL line.
+            $eventId = '{0}:{1}' -f $file.FullName, $script:scanStats.LinesRead
+            if (-not $script:activitySeen.ContainsKey($eventId)) {
+                $script:activitySeen[$eventId] = $true
+                $activity = Convert-ActivityEvent -Line $classificationText -SourceFile $file.FullName -EventId $eventId
                 if ($null -ne $activity -and $activity.Label -ne 'LOG') {
                     $script:activityEvents.Add($activity)
+                    $script:activityRevision++
                 }
-                $integration = Convert-IntegrationEvent -Line $line -SourceFile $file.FullName
+                $integration = Convert-IntegrationEvent -Line $classificationText -SourceFile $file.FullName -EventId $eventId
                 if ($null -ne $integration) {
                     $script:integrationEvents.Add($integration)
+                    $script:activityRevision++
                 }
             }
 
-            if ($line -match 'token_count') {
-                $fingerprint = Get-LineFingerprint -Line $line -SourceFile $file.FullName
-                if ($script:seen.ContainsKey($fingerprint)) { return }
-                $script:seen[$fingerprint] = $true
-                $usageEvent = Convert-TokenEvent -Line $line -SourceFile $file.FullName
+            if ($classificationText -match 'token_count') {
+                if ($script:seen.ContainsKey($eventId)) { return }
+                $script:seen[$eventId] = $true
+                $usageEvent = Convert-TokenEvent -Line $line -SourceFile $file.FullName -EventId $eventId
                 if ($null -ne $usageEvent) {
                     $script:events.Add($usageEvent)
+                    $script:usageRevision++
                 }
             }
         }
@@ -757,6 +817,10 @@ function Update-Events {
         foreach ($activity in $script:activityEvents) { $rebuiltActivity[$activity.EventId] = $true }
         foreach ($integration in $script:integrationEvents) { $rebuiltActivity[$integration.EventId] = $true }
         $script:activitySeen = $rebuiltActivity
+    }
+    }
+    finally {
+        $script:isScanning = $false
     }
 }
 
@@ -793,7 +857,13 @@ function Reload-Logs {
     $script:focusedSession = $null
     $script:focusedEventId = $null
     $script:scanStats.LinesRead = [int64]0
+    $script:usageRevision++
+    $script:activityRevision++
+    $script:lastRenderKey = ''
+    $script:lastCostKey = ''
     Update-Events
+    $script:catalogRangeStart = $script:rangeStart
+    $script:catalogRangeEnd = $script:rangeEnd
     $script:startedAt = Get-Date
 }
 
@@ -805,11 +875,31 @@ function Set-MonitorDateRange {
     if ($from -gt $to) {
         throw 'The From date must be before or equal to the To date.'
     }
+    $requestedEnd = $to.AddDays(1).AddTicks(-1)
+    $needsCatalogExpansion = (
+        $from -lt $script:catalogRangeStart -or
+        $requestedEnd -gt $script:catalogRangeEnd
+    )
+    if ($needsCatalogExpansion) {
+        # Records outside the prior catalog were deliberately skipped before
+        # JSON parsing. Rescan the union only when the user expands beyond that
+        # catalog; ordinary date changes remain an in-memory filter.
+        $unionStart = if ($from -lt $script:catalogRangeStart) { $from } else { $script:catalogRangeStart }
+        $unionEnd = if ($requestedEnd -gt $script:catalogRangeEnd) { $requestedEnd } else { $script:catalogRangeEnd }
+        $script:rangeStart = $unionStart
+        $script:rangeEnd = $unionEnd
+        Reload-Logs
+        $script:catalogRangeStart = $unionStart
+        $script:catalogRangeEnd = $unionEnd
+    }
+    else {
+        $script:rangeStart = $from
+        $script:rangeEnd = $requestedEnd
+        Update-Events
+    }
     $script:rangeStart = $from
-    $script:rangeEnd = $to.AddDays(1).AddTicks(-1)
-    # Update-Events reuses the already parsed in-memory catalog and scans only
-    # files that were not needed by the previous, narrower range.
-    Update-Events
+    $script:rangeEnd = $requestedEnd
+    $script:lastRenderKey = ''
 }
 
 function Get-DisplayEvents {
@@ -1352,9 +1442,15 @@ function Get-BillingCycleStart {
 }
 
 function Update-DerivedUsageState {
-    param([object[]]$VisibleEvents)
+    param(
+        [object[]]$VisibleEvents,
+        [string]$CacheKey = ''
+    )
 
     Update-OfficialSnapshotFromWatchFolder
+    if ($CacheKey -and $script:lastCostKey -eq $CacheKey -and $null -ne $script:costEstimate) {
+        return
+    }
     $script:costEstimate = Get-UsageCostEstimate `
         -RateCard $script:rateCard `
         -UsageEvents $VisibleEvents `
@@ -1379,6 +1475,7 @@ function Update-DerivedUsageState {
     $script:configuredSpend = Get-ConfiguredSpendEstimate `
         -EstimatedCredits ([decimal]$cycleCost.EstimatedCredits) `
         -Profile $script:costProfile
+    $script:lastCostKey = $CacheKey
 }
 
 function Save-PrivacySafeMonitorHistory {
@@ -1494,7 +1591,8 @@ $requiresPreloadedEvents = (
     $AlertSmokeTest -or $ArchivedSmokeTest -or $PresetSmokeTest -or
     $RangeCacheSmokeTest -or $QuotaResetSmokeTest -or $ExportSmokeTest -or
     $EnterpriseSmokeTest -or $EnterpriseUiSmokeTest -or
-    $ComplianceUiSmokeTest -or $InsightsUiSmokeTest
+    $ComplianceUiSmokeTest -or $InsightsUiSmokeTest -or $PerformanceSmokeTest -or
+    $CatalogExpansionSmokeTest
 )
 if ($requiresPreloadedEvents) {
     Update-Events
@@ -1506,6 +1604,32 @@ if ($Once) {
     if ($latest.Count -eq 0) { Write-Output 'No recent token events found.'; exit 0 }
     $usageEvent = $latest[0]
     Write-Output ("Events={0}; Latest={1}; FreshBurn={2}; NewInput={3}; Context={4}; Risk={5}" -f $selectedEvents.Count, $usageEvent.At.ToString('HH:mm:ss'), (Format-Tokens $usageEvent.FreshBurn), (Format-Tokens $usageEvent.NewInput), (Format-Tokens $usageEvent.Total), $usageEvent.Risk)
+    exit 0
+}
+
+if ($PerformanceSmokeTest) {
+    $timings = [ordered]@{}
+    $beforeLines = [int64]$script:scanStats.LinesRead
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    Update-Events
+    $sw.Stop()
+    $timings.IncrementalScanMs = $sw.ElapsedMilliseconds
+    $timings.NewLines = [int64]$script:scanStats.LinesRead - $beforeLines
+
+    foreach ($phase in @(
+        @{ Name = 'UsageViewMs'; Run = { $script:diagnosticUsage = @(Get-DisplayEvents -Mode 'All sessions') } },
+        @{ Name = 'ActivityViewMs'; Run = { $script:diagnosticActivity = @(Get-DisplayActivity -Mode 'All sessions') } },
+        @{ Name = 'IntegrationViewMs'; Run = { $script:diagnosticIntegrations = @(Get-DisplayIntegrations -Mode 'All sessions') } },
+        @{ Name = 'TaskBreakdownMs'; Run = { $script:diagnosticTasks = @(Get-TaskBreakdown -VisibleEvents $script:diagnosticUsage) } },
+        @{ Name = 'DerivedCostMs'; Run = { Update-DerivedUsageState -VisibleEvents $script:diagnosticUsage } }
+    )) {
+        $sw.Restart()
+        & $phase.Run
+        $sw.Stop()
+        $timings[$phase.Name] = $sw.ElapsedMilliseconds
+    }
+    Write-Output (($timings.GetEnumerator() | ForEach-Object { '{0}={1}' -f $_.Key, $_.Value }) -join '; ')
+    Write-Output ('Usage={0}; Activity={1}; Integrations={2}; Tasks={3}' -f $script:diagnosticUsage.Count, $script:diagnosticActivity.Count, $script:diagnosticIntegrations.Count, $script:diagnosticTasks.Count)
     exit 0
 }
 
@@ -1580,6 +1704,14 @@ if ($RangeCacheSmokeTest) {
     $secondCount = @(Get-DisplayEvents -Mode 'All sessions').Count
     $cacheStable = ($script:scanStats.LinesRead -eq $linesBefore)
     Write-Output ('CacheStable={0}; FirstRange={1}; SecondRange={2}; LinesRead={3}' -f $cacheStable, $firstCount, $secondCount, $script:scanStats.LinesRead)
+    exit 0
+}
+
+if ($CatalogExpansionSmokeTest) {
+    $initialCount = @(Get-DisplayEvents -Mode 'All sessions').Count
+    Set-MonitorDateRange -FromDate ([datetime]'2026-07-25') -ToDate ([datetime]'2026-07-26')
+    $expandedCount = @(Get-DisplayEvents -Mode 'All sessions').Count
+    Write-Output ('InitialEvents={0}; ExpandedEvents={1}; CatalogStart={2}' -f $initialCount, $expandedCount, $script:catalogRangeStart.ToString('yyyy-MM-dd'))
     exit 0
 }
 
@@ -1838,6 +1970,9 @@ $localLabel.ForeColor = $uiAccent
 $statusLabel = Add-Label 'Status: waiting' 856 26 246 28 12
 $statusLabel.Font = New-UiFont 12 ([System.Drawing.FontStyle]::Bold)
 $statusLabel.ForeColor = $uiWarning
+$script:mainForm = $form
+$script:mainStatusLabel = $statusLabel
+$script:mainAccentColor = $uiAccent
 $statusMeter = New-Object System.Windows.Forms.Panel
 $statusMeter.Location = New-Object System.Drawing.Point(856, 60)
 $statusMeter.Size = New-Object System.Drawing.Size(422, 8)
@@ -2310,11 +2445,54 @@ function Set-MiniMode {
     }
 }
 
+function Get-RenderStateKey {
+    $profileKey = '{0}:{1}:{2}:{3}:{4}:{5}' -f `
+        $script:costProfile.DefaultModel,
+        $script:costProfile.DollarsPerCredit,
+        $script:costProfile.IncludedCreditsPerCycle,
+        $script:costProfile.FixedCostPerCycleUsd,
+        $script:costProfile.BillingCycleStartDay,
+        $script:costProfile.CreditRateMultiplier
+    $guardKey = '{0}:{1}:{2}:{3}:{4}:{5}' -f `
+        $script:guardPolicy.Enabled,
+        $script:guardPolicy.Mode,
+        $script:guardPolicy.Metric,
+        $script:guardPolicy.Threshold,
+        $script:guardPolicy.Locked,
+        $script:guardPolicy.OverrideUntil
+    return @(
+        $script:usageRevision,
+        $script:activityRevision,
+        $script:rangeStart.Ticks,
+        $script:rangeEnd.Ticks,
+        $script:viewMode,
+        [string]$script:focusedSession,
+        [string]$script:pinnedSource,
+        $script:isMiniMode,
+        (Get-Date).ToString('yyyyMMddHHmm'),
+        $profileKey,
+        $guardKey,
+        $script:officialSnapshotSignature
+    ) -join '|'
+}
+
 function Refresh-Display {
+    if ($script:isRefreshing -or $script:isScanning) { return }
     $script:isRefreshing = $true
     try {
     Update-Events
     Update-ResponsiveLayout
+    Update-OfficialSnapshotFromWatchFolder
+    $renderKey = Get-RenderStateKey
+    if ($script:lastRenderKey -eq $renderKey) {
+        $previousGuardLabel = if ($null -ne $script:guardStatus) { [string]$script:guardStatus.Label } else { '' }
+        $previousGuardReason = if ($null -ne $script:guardStatus) { [string]$script:guardStatus.Reason } else { '' }
+        $script:guardStatus = Invoke-UsageGuardCycle
+        if ($previousGuardLabel -eq [string]$script:guardStatus.Label -and
+            $previousGuardReason -eq [string]$script:guardStatus.Reason) {
+            return
+        }
+    }
     $mode = [string]$script:viewMode
     $visible = @(Get-DisplayEvents -Mode $mode)
     if ($script:focusedSession) {
@@ -2337,7 +2515,20 @@ function Refresh-Display {
     $minuteEvents = @($visible | Where-Object { $_.At -ge (Get-Date).AddMinutes(-1) })
     $minute = Get-SumPack -Items $minuteEvents
     $window = Get-SumPack -Items $visible
-    Update-DerivedUsageState -VisibleEvents $visible
+    $costKey = @(
+        $script:usageRevision,
+        $script:rangeStart.Ticks,
+        $script:rangeEnd.Ticks,
+        $mode,
+        [string]$script:focusedSession,
+        $script:costProfile.DefaultModel,
+        $script:costProfile.DollarsPerCredit,
+        $script:costProfile.IncludedCreditsPerCycle,
+        $script:costProfile.FixedCostPerCycleUsd,
+        $script:costProfile.BillingCycleStartDay,
+        $script:costProfile.CreditRateMultiplier
+    ) -join '|'
+    Update-DerivedUsageState -VisibleEvents $visible -CacheKey $costKey
     Save-PrivacySafeMonitorHistory
     $script:guardStatus = Invoke-UsageGuardCycle
     $status = Get-OverallStatus -Latest $latest -Minute $minute
@@ -2566,6 +2757,7 @@ function Refresh-Display {
     else {
         $explainBox.Text = 'Select a row to explain the spike profile.'
     }
+    $script:lastRenderKey = Get-RenderStateKey
     }
     finally {
         $script:isRefreshing = $false
@@ -3933,22 +4125,49 @@ $timer.Add_Tick({
         $explainBox.Text = $_.Exception.Message
     }
 })
+$startupRestoreTimer = New-Object System.Windows.Forms.Timer
+$startupRestoreTimer.Interval = 1000
+$startupRestoreTimer.Add_Tick({
+    $startupRestoreTimer.Stop()
+    $form.Show()
+    $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+    $form.Activate()
+})
 $form.Add_Resize({
     Update-ResponsiveLayout
-    if ($form.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized -and
-        $null -ne $script:notifyIcon) {
-        $form.Hide()
-    }
 })
+$startupRefresh = [System.Windows.Forms.MethodInvoker]{
+    try {
+        Refresh-Display
+    }
+    catch {
+        $statusLabel.Text = 'Status: ERROR (initial local-log scan failed)'
+        $statusLabel.ForeColor = $uiCritical
+        $explainBox.Text = $_.Exception.Message
+    }
+    finally {
+        # Keep the window available while the first local-only scan runs, then
+        # restore it in case a launcher briefly changed its window state.
+        $form.Show()
+        $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+        $form.Activate()
+        $startupRestoreTimer.Start()
+        $timer.Start()
+    }
+}
 $form.Add_Shown({
     if ($StartMini -and -not $script:isMiniMode) {
         Set-MiniMode -Enabled $true
     }
-    Refresh-Display
-    $timer.Start()
+    # Queue the CPU-bound first refresh after Shown returns. This lets Windows
+    # paint and expose the form immediately instead of waiting for large local
+    # log sets to finish before the dashboard becomes visible.
+    [void]$form.BeginInvoke($startupRefresh)
 })
 $form.Add_FormClosed({
     $timer.Stop()
+    $startupRestoreTimer.Stop()
+    $startupRestoreTimer.Dispose()
     if ($null -ne $script:notifyIcon) {
         $script:notifyIcon.Visible = $false
         $script:notifyIcon.Dispose()

@@ -65,6 +65,9 @@ Invoke-MonitorTest -Name 'Command-line date range' -Arguments @('-Once', '-FromD
 Invoke-MonitorTest -Name 'Archived-session discovery' -Arguments @('-ArchivedSmokeTest') -ExpectedPattern 'ArchivedEvents=1; TotalEvents=3'
 Invoke-MonitorTest -Name 'Date presets' -Arguments @('-PresetSmokeTest') -ExpectedPattern 'Week=2026-07-21:2026-07-27; MonthDays=30; AllStart=2026-07-25'
 Invoke-MonitorTest -Name 'In-memory range cache' -Arguments @('-RangeCacheSmokeTest') -ExpectedPattern 'CacheStable=True; FirstRange=1; SecondRange=2'
+Invoke-MonitorTest -Name 'Expanded date-range catalog reload' -Arguments @(
+    '-CatalogExpansionSmokeTest', '-FromDate', '2026-07-26', '-ToDate', '2026-07-26'
+) -ExpectedPattern 'InitialEvents=2; ExpandedEvents=3; CatalogStart=2026-07-25'
 Invoke-MonitorTest -Name 'Combined status and quota windows' -Arguments @('-StatusSmokeTest') -ExpectedPattern 'QuotaPercent=95; Status=CRITICAL'
 Invoke-MonitorTest -Name 'Quota reset countdown and pace' -Arguments @('-QuotaResetSmokeTest') -ExpectedPattern 'resets in .*below even pace'
 Invoke-MonitorTest -Name 'Startup alert freshness' -Arguments @('-AlertSmokeTest') -ExpectedPattern 'StaleAlert=False; ActiveAlert=True'
