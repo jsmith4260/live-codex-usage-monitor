@@ -1484,7 +1484,21 @@ function Invoke-UsageGuardCycle {
     return [pscustomobject]@{ Label = $label; Value = $value; Stopped = $stopped; Reason = $reason }
 }
 
-Update-Events
+# Deterministic command-line and construction tests need data before their
+# early-exit handlers run. Interactive launches defer the first scan until
+# the form's Shown event so a large local log set cannot delay creation of the
+# window and make startup appear unresponsive.
+$requiresPreloadedEvents = (
+    $Once -or $UiSmokeTest -or $MiniSmokeTest -or $IntegrationSmokeTest -or
+    $TaskSmokeTest -or $DateRangeSmokeTest -or $StatusSmokeTest -or
+    $AlertSmokeTest -or $ArchivedSmokeTest -or $PresetSmokeTest -or
+    $RangeCacheSmokeTest -or $QuotaResetSmokeTest -or $ExportSmokeTest -or
+    $EnterpriseSmokeTest -or $EnterpriseUiSmokeTest -or
+    $ComplianceUiSmokeTest -or $InsightsUiSmokeTest
+)
+if ($requiresPreloadedEvents) {
+    Update-Events
+}
 
 if ($Once) {
     $selectedEvents = @(Get-DisplayEvents -Mode 'All sessions')
