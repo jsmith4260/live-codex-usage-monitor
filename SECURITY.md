@@ -1,6 +1,6 @@
 # Security and privacy
 
-Live Codex Usage Monitor is designed to read local Codex session logs and approved enterprise exports without sending them anywhere.
+Live Codex Usage Monitor is designed to read local Codex session logs and personal data exports without sending them anywhere.
 
 ## Defaults
 
@@ -22,11 +22,11 @@ The Control Center distinguishes `OFF`, `ADVISORY`, `ARMED (ENFORCED)`, `GRACE`,
 
 ## RTK boundary
 
-RTK is optional and is not downloaded or updated by the monitor. Its reported “tokens saved” are approximate shell-output tokens derived from byte counts, not OpenAI-billed tokens, ChatGPT quota, or money. `Possible bypass` means recent local shell activity is newer than the RTK database; `Degraded` means RTK reported parse failures/fallbacks; `Working - no savings` means RTK tracked commands but did not reduce their output.
+RTK is optional and is not downloaded or updated by the monitor. Its reported "tokens saved" are approximate shell-output tokens derived from byte counts, not OpenAI-billed tokens, ChatGPT quota, or money. `Possible bypass` means recent local shell activity is newer than the RTK database; `Degraded` means RTK reported parse failures/fallbacks; `Working - no savings` means RTK tracked commands but did not reduce their output.
 
-## Cost and official data boundary
+## Cost and downloaded-data boundary
 
-The bundled rate card is a dated static snapshot. Unknown models are unpriced. API-equivalent USD is not a bill, and cash estimates require user-supplied contract parameters. Official reconciliation reads only a local CSV/JSON selected or placed by the user; it never signs in or reads browser cookies.
+The bundled rate card is a dated static snapshot. Unknown models are unpriced. API-equivalent USD is not a bill, and cash estimates require user-supplied contract parameters. Reconciliation reads only a local CSV/JSON selected or placed by the user; it never signs in or reads browser cookies.
 
 ## Reporting a vulnerability
 
@@ -34,6 +34,12 @@ Please report security or privacy concerns privately to the repository owner rat
 
 Include the affected version, reproduction steps, and a minimal sanitized example. Never attach real Codex session logs, prompts, credentials, customer data, or proprietary files.
 
-## Enterprise data sources
+## Personal data sources
 
-Live Enterprise/Edu integrations should use a central least-privilege collector. Compliance API credentials must not be distributed to individual workstations. The included offline normalizer uses organization-supplied dot-path mappings and returns only date/surface/type/model counts and unique-user counts. Ingested prompt and response content should be discarded unless an organization has explicitly approved a documented compliance use case and retention policy.
+The product is a single-user tool. Personal usage summaries and activity exports must be downloaded outside the app and filtered to one individual; multi-user imports are rejected. The offline normalizer returns only date/surface/type/model counts and discards prompt/response content and raw identifiers. The monitor does not contain a central collector, administrator dashboard, or credentialed account/activity API client.
+
+## Personal backup and diagnostics
+
+Personal backups use an allowlist containing aggregate history, guard settings, cost settings, and personal settings. They exclude raw Codex logs and imported source reports. Every backed-up entry has a SHA-256 integrity value verified before restore, and interactive restore creates a pre-restore backup.
+
+Sanitized diagnostics contain check names, status words, and content-free descriptions only. They exclude usernames, full paths, source filenames, prompts, responses, IDs, and command text.

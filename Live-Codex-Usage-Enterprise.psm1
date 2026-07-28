@@ -208,4 +208,24 @@ function Import-WorkspaceAnalyticsReport {
     }
 }
 
-Export-ModuleMember -Function Import-WorkspaceAnalyticsReport
+function Import-PersonalWorkspaceAnalyticsReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+        [string[]]$Path
+    )
+
+    $summary = Import-WorkspaceAnalyticsReport -Path $Path
+    if ([int]$summary.ActiveUsers -gt 1) {
+        throw ('This report contains {0} active identities. Personal mode accepts only a report filtered to your own account.' -f $summary.ActiveUsers)
+    }
+    $summary.SourceKind = 'Personal usage summary imported from local disk'
+    $summary | Add-Member -NotePropertyName PersonalScope -NotePropertyValue 'Single user'
+    return $summary
+}
+
+Export-ModuleMember -Function @(
+    'Import-WorkspaceAnalyticsReport',
+    'Import-PersonalWorkspaceAnalyticsReport'
+)

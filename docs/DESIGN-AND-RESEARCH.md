@@ -1,6 +1,6 @@
 # Design and research decisions
 
-This release compared the project with current local usage monitors and used official OpenAI Enterprise/Edu guidance for enterprise data boundaries.
+This release compared the project with current local usage monitors and used official OpenAI guidance to define safe personal import boundaries.
 
 ## Ideas adopted
 
@@ -9,7 +9,7 @@ This release compared the project with current local usage monitors and used off
 - Quota reset countdowns and an even-pace comparison when the log supplies a window duration.
 - Visible scanned-log counts.
 - Privacy-safe aggregate exports.
-- Separate local and enterprise views.
+- Separate live local data and explicitly imported personal summaries.
 - Deterministic fixture tests for token semantics and privacy invariants.
 - Byte-offset log tails, a privacy-safe persistent aggregate history, tray access, provenance/freshness labels, forecasts, a heatmap, model mix, and configurable budgets.
 - Dated credit estimates with explicit unknown-model handling and a separate user-configured cash calculation.
@@ -55,7 +55,7 @@ Official references:
 - [Windows Forms accessibility properties](https://learn.microsoft.com/en-us/dotnet/desktop/winforms/advanced/properties-on-windows-forms-controls-that-support-accessibility-guidelines)
 - [Accessible text requirements](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/accessible-text-requirements)
 
-## Official enterprise sources
+## Official report-format sources
 
 - [Workspace analytics for ChatGPT Enterprise and Edu](https://help.openai.com/en/articles/10875114-user-analytics-for-chatgpt-enterprise-and-edu)
 - [OpenAI Compliance Platform for Enterprise and Edu](https://help.openai.com/en/articles/9261474-openai-compliance-platform-for-enterprise-customers)

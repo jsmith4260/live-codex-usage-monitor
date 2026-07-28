@@ -1,0 +1,4 @@
+{"timestamp":"2026-07-26T14:00:00Z","event":{"type":"conversation.created","surface":"web","model":"gpt-5"},"actor":{"id":"personal-secret"},"content":{"prompt":"Private content must never be exported"}}
+{"timestamp":"2026-07-26T14:05:00Z","event":{"type":"conversation.created","surface":"excel","model":"gpt-5"},"actor":{"id":"personal-secret"},"content":{"prompt":"Private workbook data must never be exported"}}
+{"timestamp":"2026-07-26T14:06:00Z","event":{"type":"conversation.created","surface":"excel","model":"gpt-5"},"actor":{"id":"personal-secret"},"content":{"response":"Private response must never be exported"}}
+not-valid-json

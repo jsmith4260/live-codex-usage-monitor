@@ -3,9 +3,12 @@ $scriptDir = Split-Path -Parent $PSCommandPath
 $monitor = Join-Path $scriptDir 'Live-Codex-Usage-GUI.ps1'
 $fixtureHome = Join-Path $scriptDir 'tests\fixtures\codex-home'
 $analyticsFixture = Join-Path $scriptDir 'tests\fixtures\workspace-analytics-users.csv'
+$personalAnalyticsFixture = Join-Path $scriptDir 'tests\fixtures\personal-usage-summary.csv'
 $complianceFixture = Join-Path $scriptDir 'tests\fixtures\compliance-export.jsonl'
+$personalActivityFixture = Join-Path $scriptDir 'tests\fixtures\personal-activity-export.jsonl'
 $complianceMapping = Join-Path $scriptDir 'tests\fixtures\compliance-mapping.json'
 $complianceConverter = Join-Path $scriptDir 'Convert-Enterprise-ComplianceExport.ps1'
+$complianceModule = Join-Path $scriptDir 'Live-Codex-Usage-Compliance.psm1'
 $enterpriseModule = Join-Path $scriptDir 'Live-Codex-Usage-Enterprise.psm1'
 $costModule = Join-Path $scriptDir 'Live-Codex-Usage-Cost.psm1'
 $rateCardPath = Join-Path $scriptDir 'config\usage-rates.json'
@@ -14,6 +17,7 @@ $officialFixture = Join-Path $scriptDir 'tests\fixtures\official-usage-snapshot.
 $storeModule = Join-Path $scriptDir 'Live-Codex-Usage-Store.psm1'
 $guardModule = Join-Path $scriptDir 'Live-Codex-Usage-Guard.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
+$personalModule = Join-Path $scriptDir 'Live-Codex-Usage-Personal.psm1'
 $rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
 
 Write-Host 'Running Live Codex Usage QA...'
@@ -73,14 +77,14 @@ Invoke-MonitorTest -Name 'Combined status and quota windows' -Arguments @('-Stat
 Invoke-MonitorTest -Name 'Quota reset countdown and pace' -Arguments @('-QuotaResetSmokeTest') -ExpectedPattern 'resets in .*below even pace'
 Invoke-MonitorTest -Name 'Startup alert freshness' -Arguments @('-AlertSmokeTest') -ExpectedPattern 'StaleAlert=False; ActiveAlert=True'
 Invoke-MonitorTest -Name 'Enterprise analytics import' -Arguments @('-EnterpriseSmokeTest', '-EnterpriseCsvPath', $analyticsFixture) -ExpectedPattern 'Rows=2; ActiveUsers=2; Messages=150; ToolMessages=40; SeatTypes=2' -RejectedPattern 'Alice|Bob|example\.invalid|secret'
-Invoke-MonitorTest -Name 'Enterprise dialog construction' -Arguments @('-EnterpriseUiSmokeTest', '-EnterpriseCsvPath', $analyticsFixture) -ExpectedPattern 'Enterprise dialog constructed successfully; Tabs=4'
+Invoke-MonitorTest -Name 'Personal usage dialog construction' -Arguments @('-EnterpriseUiSmokeTest', '-EnterpriseCsvPath', $personalAnalyticsFixture) -ExpectedPattern 'Personal usage dialog constructed successfully; Tabs=3'
 Invoke-MonitorTest -Name 'Compliance dialog construction' -Arguments @(
-    '-ComplianceUiSmokeTest', '-ComplianceInputPath', $complianceFixture,
+    '-ComplianceUiSmokeTest', '-ComplianceInputPath', $personalActivityFixture,
     '-ComplianceMappingPath', $complianceMapping
-) -ExpectedPattern 'Compliance dialog constructed successfully; Tabs=4; Rows=3'
+) -ExpectedPattern 'Compliance dialog constructed successfully; Tabs=4; Rows=2'
 Invoke-MonitorTest -Name 'Control center construction' -Arguments @(
     '-InsightsUiSmokeTest', '-OfficialSnapshotPath', $officialFixture
-) -ExpectedPattern 'Control center constructed successfully; Tabs=7; TrendRows=2; Models=2'
+) -ExpectedPattern 'Control center constructed successfully; Tabs=8; TrendRows=2; Models=2'
 
 Write-Host '  Offline rate-card estimates'
 Import-Module -Name $costModule -Force
@@ -252,6 +256,81 @@ $multiEnterprise = Import-WorkspaceAnalyticsReport -Path @($analyticsFixture, $a
 if ($multiEnterprise.SourceReports -ne 2 -or $multiEnterprise.Rows -ne 4 -or
     $multiEnterprise.ActiveUsers -ne 2 -or $multiEnterprise.TotalMessages -ne 300) {
     throw 'Multi-report Workspace Analytics aggregation is incorrect.'
+}
+$personalSummary = Import-PersonalWorkspaceAnalyticsReport -Path $personalAnalyticsFixture
+if ($personalSummary.ActiveUsers -ne 1 -or $personalSummary.TotalMessages -ne 100 -or
+    $personalSummary.PersonalScope -ne 'Single user') {
+    throw 'Personal usage summary import is incorrect.'
+}
+$multiUserRejected = $false
+try { Import-PersonalWorkspaceAnalyticsReport -Path $analyticsFixture | Out-Null }
+catch { $multiUserRejected = ($_.Exception.Message -match 'Personal mode') }
+if (-not $multiUserRejected) { throw 'Personal usage import accepted a multi-user report.' }
+Import-Module -Name $complianceModule -Force
+$personalActivity = Convert-PersonalActivityExport -InputPath $personalActivityFixture -MappingPath $complianceMapping
+if ($personalActivity.UniqueUsers -ne 1 -or $personalActivity.OutputRows -ne 2) {
+    throw 'Personal activity export import is incorrect.'
+}
+$multiActivityRejected = $false
+try { Convert-PersonalActivityExport -InputPath $complianceFixture -MappingPath $complianceMapping | Out-Null }
+catch { $multiActivityRejected = ($_.Exception.Message -match 'Personal mode') }
+if (-not $multiActivityRejected) { throw 'Personal activity import accepted a multi-user export.' }
+
+Write-Host '  Personal settings, startup registration, backup/restore, and sanitized diagnostics'
+Import-Module -Name $personalModule -Force
+$personalTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('live-codex-personal-{0}' -f [guid]::NewGuid().ToString('N'))
+$personalStateRoot = Join-Path $personalTestRoot 'state'
+$personalBackupRoot = Join-Path $personalTestRoot 'backups'
+$personalRestoreRoot = Join-Path $personalTestRoot 'restore'
+$personalStartupRoot = Join-Path $personalTestRoot 'startup'
+foreach ($folder in @($personalStateRoot,$personalBackupRoot,$personalRestoreRoot,$personalStartupRoot)) {
+    [void](New-Item -ItemType Directory -Path $folder)
+}
+try {
+    $personalSettingsPath = Join-Path $personalStateRoot 'personal-settings-v1.json'
+    $personalSettings = New-PersonalMonitorSettings
+    $personalSettings.StartMinimizedToTray = $true
+    Export-PersonalMonitorSettings -Settings $personalSettings -Path $personalSettingsPath
+    $personalAggregate = New-PrivacySafeAggregateSnapshot -UsageEvents $storeEvents -IntegrationEvents @()
+    Write-PrivacySafeAggregateStore -Path (Join-Path $personalStateRoot 'aggregate-v1.json') -Snapshot $personalAggregate
+    $personalBackup = Export-PersonalMonitorBackup -StateRoot $personalStateRoot `
+        -DestinationDirectory $personalBackupRoot -AppVersion 'test'
+    $backupPreview = Get-PersonalMonitorBackupPreview -Path $personalBackup.Path
+    if ($backupPreview.Files.Count -ne 2 -or $backupPreview.PrivacyClass -notmatch 'no-raw-logs') {
+        throw 'Personal backup preview or allowlist is incorrect.'
+    }
+    $personalSettings.StartMinimizedToTray = $false
+    Export-PersonalMonitorSettings -Settings $personalSettings -Path $personalSettingsPath
+    $restoreResult = Import-PersonalMonitorBackup -Path $personalBackup.Path -StateRoot $personalRestoreRoot -Confirm:$false
+    $restoredSettings = Import-PersonalMonitorSettings -Path (Join-Path $personalRestoreRoot 'personal-settings-v1.json')
+    if (-not $restoreResult.Restored -or -not $restoredSettings.StartMinimizedToTray) {
+        throw 'Personal backup restore did not preserve validated settings.'
+    }
+    $registration = Set-PersonalStartupRegistration -Enabled $true -LauncherPath $monitor `
+        -StartupFolder $personalStartupRoot -Confirm:$false
+    if (-not $registration.Registered -or -not $registration.MatchesLauncher) {
+        throw 'Personal start-at-sign-in registration was not created correctly.'
+    }
+    $registration = Set-PersonalStartupRegistration -Enabled $false -LauncherPath $monitor `
+        -StartupFolder $personalStartupRoot -Confirm:$false
+    if ($registration.Registered) { throw 'Personal start-at-sign-in registration was not removed.' }
+    $diagnosticPath = Join-Path $personalTestRoot 'diagnostics.json'
+    $diagnosticRows = Get-PersonalMonitorDiagnostics -CodexHome $fixtureHome -StateRoot $personalStateRoot `
+        -RtkSnapshot $rtkSnapshot -GuardReadiness $offReadiness `
+        -StartupRegistration ([pscustomobject]@{ Registered=$false; MatchesLauncher=$false }) `
+        -AppVersion 'test'
+    [void](Export-PersonalDiagnosticReport -Rows $diagnosticRows -Path $diagnosticPath -AppVersion 'test')
+    $diagnosticText = Get-Content -LiteralPath $diagnosticPath -Raw
+    if ($diagnosticText -match [regex]::Escape($fixtureHome) -or $diagnosticText -match 'personal-secret|example\.invalid') {
+        throw 'Sanitized personal diagnostics exposed a path or identifier.'
+    }
+}
+finally {
+    $resolvedPersonalRoot = [System.IO.Path]::GetFullPath($personalTestRoot)
+    $resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    if ($resolvedPersonalRoot.StartsWith($resolvedTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $resolvedPersonalRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $localExport = Join-Path ([System.IO.Path]::GetTempPath()) ('live-codex-local-{0}.csv' -f [guid]::NewGuid().ToString('N'))

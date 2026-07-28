@@ -1,6 +1,6 @@
 # Live Codex Usage Monitor
 
-An offline Windows dashboard for understanding local Codex usage telemetry, estimates, task activity, and optional RTK command-output savings. It reads data already stored on the workstation, then presents fresh token burn, replayed context, active tasks, quota windows, local tool activity, RTK health, trends, dated credit estimates, local official-report reconciliation, and an opt-in usage guard. It also opens one or more approved ChatGPT Enterprise/Edu Workspace Analytics CSV exports in a separate aggregate-only view.
+An offline, single-user Windows dashboard for understanding your own local Codex usage, estimates, task activity, and optional RTK command-output savings. It reads data already stored on your workstation, then presents fresh token burn, replayed context, active tasks, quota windows, local tool activity, RTK health, trends, dated credit estimates, downloaded-report comparison, personal reliability settings, and an opt-in usage guard.
 
 ## Purpose
 
@@ -17,7 +17,7 @@ Use this monitor to understand the shape of local Codex work without creating mo
 
 - The monitor does not invoke Codex, call ChatGPT, poll an account endpoint, or contact a network service.
 - Monitoring itself creates no ChatGPT messages, turns, tokens, credits, API requests, overages, agent activity, or other paid usage.
-- Its automatic live input is existing local Codex JSONL. Official, Workspace Analytics, and Compliance data enter only through explicit local-file workflows.
+- Its automatic live input is your existing local Codex JSONL. Downloaded usage summaries and activity exports enter only through explicit local-file workflows and must be limited to one individual.
 - Optional RTK diagnostics read only RTK's local aggregate savings/history output. The monitor forces `RTK_TELEMETRY_DISABLED=1` for every RTK child process.
 - Prompt-derived task names are disabled by default. Tasks use timestamp/session labels unless the optional `-ShowPromptTaskTitles` switch is supplied.
 - Prompts, responses, tool arguments, tool output, credentials, client data, and working-directory paths are not persisted or transmitted.
@@ -100,13 +100,14 @@ Open **Control center** or press `Ctrl+I`.
 - **Heatmap**: local day/hour activity with both text and an accessible color-intensity cue.
 - **RTK health**: local-only command-output reduction estimates, daily history, freshness, parser/fallback failures, and possible bypass status.
 - **Cost**: official credit estimates for known models, API-equivalent USD only where a current official API rate is published, and optional contract parameters for a configured cash estimate.
-- **Reconcile**: local daily credit estimates versus a downloaded official CSV/JSON, with variance, coverage, and freshness labels.
+- **Compare**: local daily credit estimates versus a downloaded personal CSV/JSON, with variance, coverage, and freshness labels.
 - **Usage guard**: disabled by default. Advisory mode warns; explicitly approved Enforced mode stops only exact user-approved Codex executable paths after a grace period.
 - **Sources**: provenance, model mix, state locations, and the privacy/zero-cost contract.
+- **Settings**: personal backup/restore, start-at-sign-in, sanitized diagnostics, RTK coverage, and guard reliability.
 
 The bundled rate card is dated. Unknown model names remain unpriced; the app never guesses a fallback unless you explicitly configure one. Fast or special service tiers can use a user-supplied multiplier. Actual dollars are shown only after you provide your own dollars-per-credit, included-credit, fixed-cost, and billing-cycle parameters.
 
-Official reporting is not real-time. Workspace Analytics normally refreshes in 1-24 hours, typically 6-12 hours, with a service target of up to 48 hours. The app labels report age and never fetches the report itself. Put approved snapshots in `%LOCALAPPDATA%\LiveCodexUsageMonitor\official-reports` or select a local file.
+Downloaded reporting is not real-time. Workspace Analytics normally refreshes in 1-24 hours, typically 6-12 hours, with a service target of up to 48 hours. The app labels report age and never fetches the report itself. Put your downloaded snapshots in `%LOCALAPPDATA%\LiveCodexUsageMonitor\official-reports` or select a local file.
 
 See [offline cost, reconciliation, and guard details](docs/OFFLINE-COST-RECONCILIATION-GUARD.md).
 See [RTK savings and health](docs/RTK-SAVINGS-AND-HEALTH.md) for exact measurement and failure-state semantics.
@@ -133,28 +134,28 @@ See [RTK savings and health](docs/RTK-SAVINGS-AND-HEALTH.md) for exact measureme
 
 The header is **OK**, **WARN**, or **CRITICAL** based on the latest quota metadata when present; otherwise it evaluates fresh token use in the last minute plus active task health. A previous task's spike cannot leave the monitor stuck at Critical after the task is no longer active.
 
-## Enterprise-wide ChatGPT coverage
+## Personal ChatGPT coverage
 
-ChatGPT desktop, web, Excel, and PowerPoint do not write the same Codex JSONL token events. Reliable enterprise reporting should come from OpenAI workspace data rather than browser interception, process scraping, or keylogging.
+ChatGPT desktop, web, Excel, and PowerPoint do not write the same Codex JSONL token events. Additional personal coverage must come from a downloaded report rather than browser interception, process scraping, or keylogging.
 
-Click **Enterprise CSV** and open one or more Workspace Analytics user CSVs exported by an authorized ChatGPT Enterprise/Edu administrator. The separate view reports aggregate active users, message totals, seat types, departments, tools, and models. It never displays or returns names, email addresses, public IDs, or account IDs.
+Click **Import my data** to open a usage-summary CSV or an advanced activity JSONL export that has been filtered to your own account. The app rejects a report containing more than one identity. It shows your message, tool, model, surface, and date aggregates without displaying or retaining names, email addresses, IDs, prompt text, or response text.
 
-For approved Compliance exports, open **Control center > Sources > Open Compliance export** and select the local JSONL plus your organization's mapping file. The aggregate-only surface reports date, product surface (for example web or Excel when present in the source), event type, model, and counts; prompt/response content and raw user identifiers are discarded.
+Personal imports remain manual and local because the monitor never signs in, reads browser cookies, or makes paid/account API calls. Web, desktop, Excel, and PowerPoint coverage depends on what your downloaded report actually contains.
 
-See the [Enterprise data-source roadmap](docs/ENTERPRISE-DATA-SOURCES.md) for the supported architecture and [Compliance export normalizer](docs/COMPLIANCE-NORMALIZER.md) for the mapping-driven, content-free JSONL adapter. [Design and research decisions](docs/DESIGN-AND-RESEARCH.md) explains which ideas from comparable monitors were adopted or rejected.
+See the [personal data-source boundary](docs/ENTERPRISE-DATA-SOURCES.md), [personal settings and recovery](docs/PERSONAL-SETTINGS-AND-RECOVERY.md), and [activity export normalizer](docs/COMPLIANCE-NORMALIZER.md).
 
-## Offline Compliance export normalization
+## Offline personal activity export normalization
 
-After an Enterprise/Edu administrator validates the current authenticated event schema, adapt `config\compliance-mapping.example.json` and run:
+If you have a downloaded activity JSONL that is filtered to your account, adapt `config\compliance-mapping.example.json` to its field names and run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Convert-Enterprise-ComplianceExport.ps1 `
-  -InputPath C:\ApprovedInput\compliance-export.jsonl `
+  -InputPath C:\MyExports\personal-activity-export.jsonl `
   -MappingPath .\config\compliance-mapping.example.json `
-  -OutputPath C:\ApprovedOutput\compliance-summary.csv
+  -OutputPath C:\MyExports\personal-activity-summary.csv
 ```
 
-The result contains date, surface, event type, model, event count, and unique-user count only. The tool does not call the Compliance API or retain a raw identifier.
+The result contains date, surface, event type, model, event count, and unique-user count only. The importer rejects the result if it represents more than one identity. The tool does not call an account or activity API or retain a raw identifier.
 
 ## What it does not do
 
@@ -165,8 +166,9 @@ The result contains date, surface, event type, model, event count, and unique-us
 - It does not claim estimates are an OpenAI invoice or account balance.
 - It does not claim RTK's byte-derived shell-output estimate is a billed-token count, quota reduction, or cash saving.
 - It does not silently price unknown models or assign an actual cash value to a credit.
-- It does not implement a live Compliance API collector without the organization's current authenticated schema, approved service identity, and retention controls.
+- It does not implement a live account or activity API collector, accept account credentials, or bypass product reporting controls.
 - It does not inspect browser cookies/history, Office documents, prompts, keystrokes, TLS traffic, or private account endpoints.
+- It does not track, compare, rank, or report on other people. Multi-user imports are rejected.
 - The local guard does not block ChatGPT web, Office add-ins, another device, or launches after the monitor exits. Enterprise-mandatory blocking belongs in approved workspace and endpoint policies.
 
 ## QA

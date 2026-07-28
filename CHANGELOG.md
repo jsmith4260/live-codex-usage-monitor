@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.2.0 - 2026-07-28
+
+### Personal coverage
+
+- Refocus the user-facing product on one individual and remove multi-user/department/seat administration from the normal workflow.
+- Replace the Enterprise CSV action with a private **Import my data** chooser for personal usage-summary CSV and advanced activity JSONL exports.
+- Reject usage summaries and activity exports containing more than one identity.
+- Rename official/enterprise terminology to downloaded report, personal usage, activity export, and local comparison.
+
+### Reliability and portability
+
+- Add a Personal Settings tab with local backup/restore, integrity manifests, automatic pre-restore backups, and a strict aggregate/settings allowlist that excludes raw logs and imported source files.
+- Add current-user start-at-sign-in registration with optional minimized-to-tray startup and no administrator requirement.
+- Add sanitized health checks and diagnostic JSON export with no usernames, full paths, prompts, responses, or identifiers.
+- Add combined RTK coverage and usage-guard reliability status, including a warning when enforced guard is armed but start-at-sign-in is off.
+
+### QA
+
+- Add personal/multi-user rejection fixtures, backup round-trip and integrity tests, startup-registration tests, diagnostic privacy tests, and visual QA for the personal settings and usage-summary surfaces.
+
 ## 3.1.0 - 2026-07-28
 
 ### RTK savings and health

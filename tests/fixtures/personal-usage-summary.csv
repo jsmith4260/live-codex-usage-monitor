@@ -1,0 +1,2 @@
+cadence,period_start,period_end,account_id,public_id,name,email,is_active,seat_type,department,messages,gpt_messages,tool_messages,project_messages,model_to_messages,tool_to_messages
+daily,2026-07-01,2026-07-26,acct-personal,user-personal,Private User,private@example.invalid,true,ChatGPT,Personal,100,40,30,10,"{""gpt-5"":70,""gpt-4.1"":30}","{""Search"":20,""Data analysis"":10}"

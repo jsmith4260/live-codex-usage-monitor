@@ -76,7 +76,8 @@ param(
     [switch]$CatalogExpansionSmokeTest,
     [string]$RtkExecutablePath = '',
     [switch]$DisableRtkIntegration,
-    [ValidateRange(0, 6)]
+    [switch]$StartMinimizedToTray,
+    [ValidateRange(0, 7)]
     [int]$InsightsTabIndex = 0,
     [string]$CaptureScreenshotPath = ''
 )
@@ -89,17 +90,20 @@ if ([string]::IsNullOrWhiteSpace($scriptDir)) { $scriptDir = (Get-Location).Path
 
 $costModule = Join-Path $scriptDir 'Live-Codex-Usage-Cost.psm1'
 $guardModule = Join-Path $scriptDir 'Live-Codex-Usage-Guard.psm1'
+$personalModule = Join-Path $scriptDir 'Live-Codex-Usage-Personal.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
 $rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
 $reconciliationModule = Join-Path $scriptDir 'Live-Codex-Usage-Reconciliation.psm1'
 $storeModule = Join-Path $scriptDir 'Live-Codex-Usage-Store.psm1'
-foreach ($modulePath in @($costModule, $guardModule, $privacyModule, $rtkModule, $reconciliationModule, $storeModule)) {
+foreach ($modulePath in @($costModule, $guardModule, $personalModule, $privacyModule, $rtkModule, $reconciliationModule, $storeModule)) {
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) { throw "Required module not found: $modulePath" }
     Import-Module -Name $modulePath -Force
 }
 $script:startupWarnings = [System.Collections.Generic.List[string]]::new()
 $script:rateCard = Import-UsageRateCard -Path (Join-Path $scriptDir 'config\usage-rates.json')
 $script:statePaths = Get-MonitorStatePaths -Root $StateRoot
+$script:appVersion = (Get-Content -LiteralPath (Join-Path $scriptDir 'VERSION') -Raw).Trim()
+$script:launcherPath = Join-Path $scriptDir 'Start-Live-Codex-Usage.ps1'
 try { $script:costProfile = Import-UsageCostProfile -Path $script:statePaths.CostProfile }
 catch {
     $script:costProfile = New-UsageCostProfile
@@ -110,6 +114,19 @@ catch {
     $script:guardPolicy = New-UsageGuardPolicy
     $script:startupWarnings.Add("Usage guard was disabled: $($_.Exception.Message)")
 }
+try { $script:personalSettings = Import-PersonalMonitorSettings -Path $script:statePaths.PersonalSettings }
+catch {
+    $script:personalSettings = New-PersonalMonitorSettings
+    $script:startupWarnings.Add("Personal settings were reset: $($_.Exception.Message)")
+}
+try { $script:startupRegistration = Test-PersonalStartupRegistration -LauncherPath $script:launcherPath }
+catch {
+    $script:startupRegistration = [pscustomobject]@{
+        Registered = $false; MatchesLauncher = $false; RegistrationPath = ''; Status = 'Unavailable'
+    }
+    $script:startupWarnings.Add("Start-at-sign-in status is unavailable: $($_.Exception.Message)")
+}
+$script:diagnosticRows = @()
 $script:officialSnapshot = $null
 $script:officialSnapshotFullName = ''
 $script:officialSnapshotSignature = ''
@@ -1556,6 +1573,34 @@ function Save-UsageGuardState {
     Export-UsageGuardPolicy -Policy $script:guardPolicy -Path $script:statePaths.GuardPolicy
 }
 
+function Save-PersonalSettingsState {
+    if ($DisablePersistence) { return }
+    Export-PersonalMonitorSettings -Settings $script:personalSettings -Path $script:statePaths.PersonalSettings
+}
+
+function Update-PersonalDiagnostics {
+    try {
+        $script:startupRegistration = Test-PersonalStartupRegistration -LauncherPath $script:launcherPath
+    }
+    catch {
+        $script:startupRegistration = [pscustomobject]@{
+            Registered = $false; MatchesLauncher = $false; RegistrationPath = ''; Status = 'Unavailable'
+        }
+    }
+    $readiness = Get-UsageGuardReadiness -Policy $script:guardPolicy
+    $script:diagnosticRows = @(Get-PersonalMonitorDiagnostics `
+        -CodexHome $CodexHome `
+        -StateRoot $script:statePaths.Root `
+        -RtkSnapshot $script:rtkSnapshot `
+        -GuardReadiness $readiness `
+        -StartupRegistration $script:startupRegistration `
+        -PersistenceEnabled (-not $DisablePersistence) `
+        -AppVersion $script:appVersion)
+    $script:personalSettings.LastDiagnosticsAt = (Get-Date).ToString('o')
+    Save-PersonalSettingsState
+    return @($script:diagnosticRows)
+}
+
 function Invoke-UsageGuardCycle {
     $policy = $script:guardPolicy
     if (-not [bool]$policy.Enabled) {
@@ -2057,7 +2102,7 @@ $quotaLabel = Add-Label 'Quota: waiting for token event metadata' 782 204 498 21
 $quotaLabel.ForeColor = $uiTextSecondary
 $modelSummaryLabel = Add-Label 'Models: waiting for token events' 26 228 735 21 9
 $timeSummaryLabel = Add-Label 'Time: waiting for token events' 782 228 498 21 9
-$noteLabel = Add-Label 'Private, offline, and zero-cost monitoring. Cost and official-report status will appear here.' 26 276 1254 20 9
+$noteLabel = Add-Label 'Private, offline, and zero-cost monitoring. Cost and downloaded-report status will appear here.' 26 276 1254 20 9
 $noteLabel.ForeColor = $uiTextMuted
 $sessionSummaryLabel = Add-Label 'Sessions: waiting for token events' 26 252 735 21 9
 $integrationSummaryLabel = Add-Label 'Integrations: waiting for tool/plugin/add-in calls' 782 252 498 21 9
@@ -2071,7 +2116,7 @@ $viewPinnedButton = Add-Button '&Pinned' 288 326 82 30
 $pinButton = Add-Button 'Pi&n latest' 380 326 94 30
 $clearButton = Add-Button '&Start fresh' 484 326 100 30
 $miniButton = Add-Button '&Mini mode' 594 326 96 30
-$enterpriseButton = Add-Button '&Enterprise CSV' 700 326 126 30
+$enterpriseButton = Add-Button '&Import my data' 700 326 126 30
 $controlCenterButton = Add-Button '&Control center' 836 326 138 30
 
 $presetLabel = Add-Label 'RANGE' 26 365 42 24 8
@@ -2279,10 +2324,10 @@ $loadRangeButton.AccessibleName = 'Load selected date range'
 $loadRangeButton.AccessibleDescription = 'Reload aggregate usage events for the dates shown in the From and To controls.'
 $exportButton.AccessibleName = 'Export privacy-safe daily summary'
 $exportButton.AccessibleDescription = 'Write daily aggregate counts only. Prompt content, paths, task names, and identifiers are excluded.'
-$enterpriseButton.AccessibleName = 'Import Workspace Analytics CSV'
-$enterpriseButton.AccessibleDescription = 'Open a local Enterprise or Edu Workspace Analytics CSV and show aggregate metrics.'
+$enterpriseButton.AccessibleName = 'Import my local ChatGPT data'
+$enterpriseButton.AccessibleDescription = 'Open a downloaded usage summary or activity export limited to this individual.'
 $controlCenterButton.AccessibleName = 'Open insights and controls'
-$controlCenterButton.AccessibleDescription = 'Open offline trends, local RTK savings health, spending estimates, official-report reconciliation, provenance, and the opt-in usage guard.'
+$controlCenterButton.AccessibleDescription = 'Open offline trends, local RTK savings health, spending estimates, downloaded-report comparison, provenance, personal settings, and the opt-in usage guard.'
 $miniButton.AccessibleName = 'Toggle compact monitor mode'
 $miniButton.AccessibleDescription = 'Switch between the full dashboard and the always-on-top compact status view.'
 $viewAllButton.AccessibleName = 'Show all tasks'
@@ -2300,8 +2345,8 @@ $toolTip = New-Object System.Windows.Forms.ToolTip
 $toolTip.SetToolTip($presetBox, 'Choose a quick range. Custom keeps the calendar selections.')
 $toolTip.SetToolTip($loadRangeButton, 'Load the complete selected date range (Ctrl+L).')
 $toolTip.SetToolTip($exportButton, 'Export daily aggregates only; no prompts, paths, task names, or identifiers (Ctrl+E).')
-$toolTip.SetToolTip($enterpriseButton, 'Open an aggregate Workspace Analytics CSV from ChatGPT Enterprise or Edu.')
-$toolTip.SetToolTip($controlCenterButton, 'Open offline insights, RTK savings health, cost estimates, official reconciliation, and the opt-in usage guard.')
+$toolTip.SetToolTip($enterpriseButton, 'Import a downloaded report limited to your own account; files remain on this PC.')
+$toolTip.SetToolTip($controlCenterButton, 'Open offline insights, RTK savings health, cost estimates, downloaded-report comparison, personal settings, and the opt-in usage guard.')
 $toolTip.SetToolTip($miniButton, 'Toggle the always-on-top compact view (Ctrl+M).')
 $toolTip.SetToolTip($clearButton, 'Discard the in-memory window and watch only newly appended log records.')
 
@@ -2661,10 +2706,10 @@ function Refresh-Display {
         'configured cycle ${0:N2}' -f [decimal]$script:configuredSpend.EstimatedCycleSpendUsd
     }
     else { 'cash estimate needs contract parameters' }
-    $officialText = 'official report not imported'
+    $officialText = 'downloaded report not imported'
     if ($null -ne $script:officialSnapshot) {
         $freshness = Get-OfficialSnapshotFreshness -ReportUpdatedAt ([datetime]$script:officialSnapshot.ReportUpdatedAt)
-        $officialText = 'official report {0}h old' -f $freshness.AgeHours
+        $officialText = 'downloaded report {0}h old' -f $freshness.AgeHours
     }
     $unpricedText = if ([int64]$script:costEstimate.UnpricedTokens -gt 0) {
         ' | unpriced {0}' -f (Format-Tokens ([int64]$script:costEstimate.UnpricedTokens))
@@ -2841,7 +2886,7 @@ function Show-EnterpriseAnalyticsDialog {
     if ($selectedPaths.Count -eq 0) {
         $openDialog = New-Object System.Windows.Forms.OpenFileDialog
         try {
-            $openDialog.Title = 'Open one or more Workspace Analytics user CSV reports'
+            $openDialog.Title = 'Import my downloaded usage summary'
             $openDialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'
             $openDialog.CheckFileExists = $true
             $openDialog.Multiselect = $true
@@ -2855,10 +2900,10 @@ function Show-EnterpriseAnalyticsDialog {
 
     $enterpriseModule = Join-Path $scriptDir 'Live-Codex-Usage-Enterprise.psm1'
     Import-Module -Name $enterpriseModule -Force
-    $summary = Import-WorkspaceAnalyticsReport -Path $selectedPaths
+    $summary = Import-PersonalWorkspaceAnalyticsReport -Path $selectedPaths
 
     $dialog = New-Object System.Windows.Forms.Form
-    $dialog.Text = 'Enterprise Workspace Analytics - Aggregate View'
+    $dialog.Text = 'My ChatGPT usage summary'
     $dialog.Size = New-Object System.Drawing.Size(980, 720)
     $dialog.MinimumSize = New-Object System.Drawing.Size(760, 560)
     $dialog.StartPosition = 'CenterParent'
@@ -2866,10 +2911,10 @@ function Show-EnterpriseAnalyticsDialog {
     $dialog.BackColor = $uiWindow
     $dialog.ForeColor = $uiText
     $dialog.Font = New-UiFont 9.5
-    $dialog.AccessibleName = 'Enterprise Workspace Analytics aggregate view'
+    $dialog.AccessibleName = 'My locally imported ChatGPT usage summary'
 
     $heading = New-Object System.Windows.Forms.Label
-    $heading.Text = 'Workspace Analytics'
+    $heading.Text = 'My usage summary'
     $heading.Location = New-Object System.Drawing.Point(18, 16)
     $heading.Size = New-Object System.Drawing.Size(920, 32)
     $heading.Anchor = 'Top,Left,Right'
@@ -2882,7 +2927,8 @@ function Show-EnterpriseAnalyticsDialog {
         '{0} to {1}' -f $summary.PeriodStart.ToString('yyyy-MM-dd'), $summary.PeriodEnd.ToString('yyyy-MM-dd')
     }
     else { 'period not supplied' }
-    $overview.Text = 'Period {0} | reports {1} | rows {2} | active users {3} | messages {4:N0} | GPT {5:N0} | tools {6:N0} | projects {7:N0}' -f $periodText, $summary.SourceReports, $summary.Rows, $summary.ActiveUsers, $summary.TotalMessages, $summary.GptMessages, $summary.ToolMessages, $summary.ProjectMessages
+    $overview.Text = 'Period {0} | downloaded report(s) {1} | messages {2:N0} | GPT {3:N0} | tools {4:N0} | projects {5:N0}' -f `
+        $periodText, $summary.SourceReports, $summary.TotalMessages, $summary.GptMessages, $summary.ToolMessages, $summary.ProjectMessages
     $overview.Location = New-Object System.Drawing.Point(18, 56)
     $overview.Size = New-Object System.Drawing.Size(920, 54)
     $overview.Anchor = 'Top,Left,Right'
@@ -2891,7 +2937,7 @@ function Show-EnterpriseAnalyticsDialog {
     $dialog.Controls.Add($overview)
 
     $privacy = New-Object System.Windows.Forms.Label
-    $privacy.Text = 'Names, email addresses, public IDs, account IDs, prompt text, and file content are neither shown nor retained by this view.'
+    $privacy.Text = 'This view accepts one person only. Names, email addresses, IDs, prompt text, and file content are neither shown nor retained.'
     $privacy.Location = New-Object System.Drawing.Point(18, 112)
     $privacy.Size = New-Object System.Drawing.Size(920, 28)
     $privacy.Anchor = 'Top,Left,Right'
@@ -2903,13 +2949,18 @@ function Show-EnterpriseAnalyticsDialog {
     $tabs.Location = New-Object System.Drawing.Point(18, 148)
     $tabs.Size = New-Object System.Drawing.Size(928, 500)
     $tabs.Anchor = 'Top,Bottom,Left,Right'
-    $tabs.AccessibleName = 'Workspace Analytics breakdowns'
+    $tabs.AccessibleName = 'My imported usage breakdowns'
     Set-TabTheme -TabControl $tabs
     $dialog.Controls.Add($tabs)
 
+    $activityRows = @(
+        [pscustomobject]@{ Name = 'All messages'; Messages = [int64]$summary.TotalMessages },
+        [pscustomobject]@{ Name = 'GPT messages'; Messages = [int64]$summary.GptMessages },
+        [pscustomobject]@{ Name = 'Tool messages'; Messages = [int64]$summary.ToolMessages },
+        [pscustomobject]@{ Name = 'Project messages'; Messages = [int64]$summary.ProjectMessages }
+    )
     $tabDefinitions = @(
-        [pscustomobject]@{ Title = 'Seat types'; Rows = @($summary.SeatTypes); Columns = @('Name','Users','Messages') },
-        [pscustomobject]@{ Title = 'Departments'; Rows = @($summary.Departments); Columns = @('Name','Users','Messages') },
+        [pscustomobject]@{ Title = 'Activity'; Rows = $activityRows; Columns = @('Name','Messages') },
         [pscustomobject]@{ Title = 'Tools'; Rows = @($summary.Tools); Columns = @('Name','Messages') },
         [pscustomobject]@{ Title = 'Models'; Rows = @($summary.Models); Columns = @('Name','Messages') }
     )
@@ -2936,7 +2987,7 @@ function Show-EnterpriseAnalyticsDialog {
         $summaryGrid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Gainsboro
         $summaryGrid.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(0, 90, 120)
         $summaryGrid.AccessibleName = "$($definition.Title) aggregate table"
-        $summaryGrid.AccessibleDescription = 'Aggregate Enterprise analytics with direct user identifiers removed.'
+        $summaryGrid.AccessibleDescription = 'Personal imported usage aggregates with direct identifiers removed.'
         Set-GridTheme $summaryGrid
         foreach ($column in $definition.Columns) { [void]$summaryGrid.Columns.Add($column, $column) }
         foreach ($row in $definition.Rows) {
@@ -2964,7 +3015,7 @@ function Show-EnterpriseAnalyticsDialog {
                 $dialog.Hide()
             }
         }
-        Write-Output ('Enterprise dialog constructed successfully; Tabs={0}' -f $tabs.TabPages.Count)
+        Write-Output ('Personal usage dialog constructed successfully; Tabs={0}' -f $tabs.TabPages.Count)
     }
     else {
         [void]$dialog.ShowDialog($form)
@@ -2983,7 +3034,7 @@ function Show-ComplianceAnalyticsDialog {
     if ([string]::IsNullOrWhiteSpace($InputPath)) {
         $inputDialog = New-Object System.Windows.Forms.OpenFileDialog
         try {
-            $inputDialog.Title = 'Open approved local Compliance JSONL export'
+            $inputDialog.Title = 'Open my downloaded activity export'
             $inputDialog.Filter = 'JSONL files (*.jsonl)|*.jsonl|All files (*.*)|*.*'
             $inputDialog.CheckFileExists = $true
             if ($inputDialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
@@ -2994,7 +3045,7 @@ function Show-ComplianceAnalyticsDialog {
     if ([string]::IsNullOrWhiteSpace($MappingPath)) {
         $mappingDialog = New-Object System.Windows.Forms.OpenFileDialog
         try {
-            $mappingDialog.Title = 'Open approved Compliance field mapping'
+            $mappingDialog.Title = 'Open local export mapping (advanced)'
             $mappingDialog.Filter = 'JSON files (*.json)|*.json|All files (*.*)|*.*'
             $mappingDialog.CheckFileExists = $true
             if ($mappingDialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
@@ -3004,10 +3055,10 @@ function Show-ComplianceAnalyticsDialog {
     }
 
     Import-Module -Name (Join-Path $scriptDir 'Live-Codex-Usage-Compliance.psm1') -Force
-    $result = Convert-ComplianceExport -InputPath $InputPath -MappingPath $MappingPath
+    $result = Convert-PersonalActivityExport -InputPath $InputPath -MappingPath $MappingPath
 
     $dialog = New-Object System.Windows.Forms.Form
-    $dialog.Text = 'Enterprise Compliance - Aggregate Local View'
+    $dialog.Text = 'My activity summary'
     $dialog.Size = New-Object System.Drawing.Size(980, 700)
     $dialog.MinimumSize = New-Object System.Drawing.Size(760, 560)
     $dialog.StartPosition = 'CenterParent'
@@ -3015,11 +3066,11 @@ function Show-ComplianceAnalyticsDialog {
     $dialog.BackColor = $uiWindow
     $dialog.ForeColor = $uiText
     $dialog.Font = New-UiFont 9.5
-    $dialog.AccessibleName = 'Enterprise Compliance aggregate view'
-    $dialog.AccessibleDescription = 'Content-free aggregate view of a local Compliance JSONL export.'
+    $dialog.AccessibleName = 'My local activity export summary'
+    $dialog.AccessibleDescription = 'Content-free aggregate view of a local activity JSONL export for one person.'
 
     $heading = New-Object System.Windows.Forms.Label
-    $heading.Text = 'Compliance activity - aggregate only'
+    $heading.Text = 'My activity summary'
     $heading.Location = New-Object System.Drawing.Point(20, 18)
     $heading.Size = New-Object System.Drawing.Size(920, 34)
     $heading.Anchor = 'Top,Left,Right'
@@ -3038,7 +3089,7 @@ function Show-ComplianceAnalyticsDialog {
     $dialog.Controls.Add($overview)
 
     $privacy = New-Object System.Windows.Forms.Label
-    $privacy.Text = 'Prompt/response content and raw user identifiers are discarded. Unique-user values are per source aggregate row and are not summed across categories.'
+    $privacy.Text = 'Personal mode rejects multi-user exports. Prompt/response content and raw identifiers are discarded.'
     $privacy.Location = New-Object System.Drawing.Point(20, 88)
     $privacy.Size = New-Object System.Drawing.Size(920, 38)
     $privacy.Anchor = 'Top,Left,Right'
@@ -3050,7 +3101,7 @@ function Show-ComplianceAnalyticsDialog {
     $tabs.Location = New-Object System.Drawing.Point(20, 136)
     $tabs.Size = New-Object System.Drawing.Size(928, 500)
     $tabs.Anchor = 'Top,Bottom,Left,Right'
-    $tabs.AccessibleName = 'Compliance aggregate breakdowns'
+    $tabs.AccessibleName = 'My activity breakdowns'
     Set-TabTheme -TabControl $tabs
     $dialog.Controls.Add($tabs)
 
@@ -3093,7 +3144,7 @@ function Show-ComplianceAnalyticsDialog {
         $grid.AllowUserToDeleteRows = $false
         $grid.RowHeadersVisible = $false
         $grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::Fill
-        $grid.AccessibleName = "$($definition.Title) Compliance aggregate table"
+        $grid.AccessibleName = "$($definition.Title) personal activity table"
         [void]$grid.Columns.Add('Name', $(if ($definition.Title -eq 'Daily') { 'Date' } else { $definition.Title.TrimEnd('s') }))
         [void]$grid.Columns.Add('Events', 'Events')
         Set-GridTheme -DataGrid $grid
@@ -3127,10 +3178,95 @@ function Show-ComplianceAnalyticsDialog {
     $dialog.Dispose()
 }
 
+function Show-PersonalImportDialog {
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = 'Import my data'
+    $dialog.Size = New-Object System.Drawing.Size(660, 350)
+    $dialog.MinimumSize = $dialog.Size
+    $dialog.MaximumSize = $dialog.Size
+    $dialog.StartPosition = 'CenterParent'
+    $dialog.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
+    $dialog.BackColor = $uiWindow
+    $dialog.ForeColor = $uiText
+    $dialog.Font = New-UiFont 9.5
+    $dialog.AccessibleName = 'Import my local ChatGPT data'
+
+    $heading = New-Object System.Windows.Forms.Label
+    $heading.Text = 'Import my data'
+    $heading.Location = New-Object System.Drawing.Point(22, 18)
+    $heading.Size = New-Object System.Drawing.Size(600, 34)
+    $heading.Font = New-UiFont 18 ([System.Drawing.FontStyle]::Bold)
+    $heading.ForeColor = $uiText
+    $dialog.Controls.Add($heading)
+
+    $note = New-Object System.Windows.Forms.Label
+    $note.Text = 'Choose a downloaded report limited to your own account.'
+    $note.Location = New-Object System.Drawing.Point(22, 56)
+    $note.Size = New-Object System.Drawing.Size(600, 24)
+    $note.ForeColor = $uiAccent
+    $dialog.Controls.Add($note)
+
+    function Add-PersonalImportChoice {
+        param([string]$Title, [string]$Description, [string]$ButtonText, [int]$Y, [string]$Choice)
+        $panel = New-Object System.Windows.Forms.Panel
+        $panel.Location = New-Object System.Drawing.Point(22, $Y)
+        $panel.Size = New-Object System.Drawing.Size(600, 82)
+        $panel.BackColor = $uiSurface
+        $panel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+        $dialog.Controls.Add($panel)
+        $titleLabel = New-Object System.Windows.Forms.Label
+        $titleLabel.Text = $Title
+        $titleLabel.Location = New-Object System.Drawing.Point(14, 10)
+        $titleLabel.Size = New-Object System.Drawing.Size(350, 24)
+        $titleLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
+        $titleLabel.ForeColor = $uiText
+        $panel.Controls.Add($titleLabel)
+        $descriptionLabel = New-Object System.Windows.Forms.Label
+        $descriptionLabel.Text = $Description
+        $descriptionLabel.Location = New-Object System.Drawing.Point(14, 38)
+        $descriptionLabel.Size = New-Object System.Drawing.Size(390, 34)
+        $descriptionLabel.ForeColor = $uiTextSecondary
+        $panel.Controls.Add($descriptionLabel)
+        $button = New-Object System.Windows.Forms.Button
+        $button.Text = $ButtonText
+        $button.Location = New-Object System.Drawing.Point(420, 23)
+        $button.Size = New-Object System.Drawing.Size(160, 34)
+        $button.BackColor = $uiSurfaceRaised
+        $button.ForeColor = $uiText
+        $button.FlatStyle = 'Flat'
+        $button.FlatAppearance.BorderColor = $uiBorder
+        $button.AccessibleName = $Title
+        $button.Add_Click({
+            $dialog.Tag = $Choice
+            $dialog.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            $dialog.Close()
+        }.GetNewClosure())
+        $panel.Controls.Add($button)
+    }
+    Add-PersonalImportChoice -Title 'Usage summary (CSV)' `
+        -Description 'Messages, models, and tools from a downloaded summary filtered to you.' `
+        -ButtonText '&Choose CSV...' -Y 90 -Choice 'Usage'
+    Add-PersonalImportChoice -Title 'Activity export (JSONL)' `
+        -Description 'Advanced local event aggregation for your own web and Office activity.' `
+        -ButtonText 'Choose &JSONL...' -Y 182 -Choice 'Activity'
+
+    $privacy = New-Object System.Windows.Forms.Label
+    $privacy.Text = 'Files stay on this PC. Prompt and response text is not retained.'
+    $privacy.Location = New-Object System.Drawing.Point(22, 276)
+    $privacy.Size = New-Object System.Drawing.Size(600, 24)
+    $privacy.ForeColor = $uiTextMuted
+    $dialog.Controls.Add($privacy)
+    [void]$dialog.ShowDialog($form)
+    $choice = [string]$dialog.Tag
+    $dialog.Dispose()
+    if ($choice -eq 'Usage') { Show-EnterpriseAnalyticsDialog }
+    elseif ($choice -eq 'Activity') { Show-ComplianceAnalyticsDialog }
+}
+
 function Show-ControlCenterDialog {
     param(
         [switch]$ConstructionOnly,
-        [ValidateRange(0, 6)]
+        [ValidateRange(0, 7)]
         [int]$InitialTabIndex = 0,
         [string]$ScreenshotPath = ''
     )
@@ -3185,7 +3321,7 @@ function Show-ControlCenterDialog {
     $dialog.Font = New-UiFont 9.5
     $dialog.KeyPreview = $true
     $dialog.AccessibleName = 'Usage insights and controls'
-    $dialog.AccessibleDescription = 'Offline usage trends, local RTK savings health, cost estimates, official-report reconciliation, provenance, and opt-in guard settings.'
+    $dialog.AccessibleDescription = 'Offline usage trends, local RTK savings health, cost estimates, downloaded-report comparison, provenance, personal settings, and opt-in guard settings.'
 
     function Add-ControlCenterLabel {
         param(
@@ -3263,7 +3399,7 @@ function Show-ControlCenterDialog {
         -Text 'Every calculation stays on this PC. No account polling, ChatGPT turn, API request, credit, or paid service is used.' `
         -X 20 -Y 56 -Width 1060 -Height 24 -Size 10 -Color $uiAccent
     $sourceHeading = Add-ControlCenterLabel -Parent $dialog `
-        -Text ('LOCAL LOGS | RTK {0} | RATE SNAPSHOT {1} | OFFICIAL {2} | GUARD {3}' -f `
+        -Text ('LOCAL LOGS | RTK {0} | RATE SNAPSHOT {1} | REPORT {2} | GUARD {3}' -f `
             $script:rtkSnapshot.HealthLabel.ToUpperInvariant(), `
             $script:rateCard.EffectiveDate, `
             $(if ($null -ne $script:officialSnapshot) { 'IMPORTED' } else { 'NOT IMPORTED' }), `
@@ -3599,7 +3735,7 @@ function Show-ControlCenterDialog {
             $refreshRtkButton.Enabled = $false
             [void](Update-RtkSavingsState -Force)
             Refresh-RtkTab
-            $sourceHeading.Text = 'LOCAL LOGS | RTK {0} | RATE SNAPSHOT {1} | OFFICIAL {2} | GUARD {3}' -f `
+            $sourceHeading.Text = 'LOCAL LOGS | RTK {0} | RATE SNAPSHOT {1} | REPORT {2} | GUARD {3}' -f `
                 $script:rtkSnapshot.HealthLabel.ToUpperInvariant(), `
                 $script:rateCard.EffectiveDate, `
                 $(if ($null -ne $script:officialSnapshot) { 'IMPORTED' } else { 'NOT IMPORTED' }), `
@@ -3728,17 +3864,17 @@ function Show-ControlCenterDialog {
         )
     }
 
-    # Official report reconciliation
-    $reconcileTab = New-ControlCenterTab 'Reconcile'
+    # Downloaded report comparison
+    $reconcileTab = New-ControlCenterTab 'Compare'
     $reconcileHeading = Add-ControlCenterLabel -Parent $reconcileTab `
-        -Text "Compare this PC's local Codex estimate with an official report that you downloaded." `
+        -Text "Compare this PC's local Codex estimate with a usage report that you downloaded." `
         -X 14 -Y 14 -Width 1008 -Height 26 -Size 11 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold)
     $reconcileNote = Add-ControlCenterLabel -Parent $reconcileTab `
-        -Text 'The app never signs in or fetches account data. Official reports may lag 1-24 hours (typically 6-12; service target up to 48), and shared ChatGPT/Excel usage can make totals differ.' `
+        -Text 'The app never signs in or fetches account data. Downloaded reports may lag 1-24 hours (typically 6-12; service target up to 48), and your ChatGPT/Excel usage can make totals differ.' `
         -X 14 -Y 44 -Width 1008 -Height 42 -Size 9 -Color $uiTextMuted
     $importOfficialButton = Add-ControlCenterButton -Parent $reconcileTab -Text '&Import local report' -X 14 -Y 94 -Width 150
     $watchOfficialButton = Add-ControlCenterButton -Parent $reconcileTab -Text 'Use &watched folder' -X 176 -Y 94 -Width 166
-    $officialStatusLabel = Add-ControlCenterLabel -Parent $reconcileTab -Text 'Official report: not imported' `
+    $officialStatusLabel = Add-ControlCenterLabel -Parent $reconcileTab -Text 'Downloaded report: not imported' `
         -X 356 -Y 98 -Width 666 -Height 28 -Size 9 -Color $uiTextSecondary
     $reconcileGridHost = New-Object System.Windows.Forms.Panel
     $reconcileGridHost.Location = New-Object System.Drawing.Point(14, 138)
@@ -3746,8 +3882,8 @@ function Show-ControlCenterDialog {
     $reconcileGridHost.Anchor = 'Top,Bottom,Left,Right'
     $reconcileTab.Controls.Add($reconcileGridHost)
     $reconcileGrid = New-ControlCenterGrid -Parent $reconcileGridHost `
-        -Columns @('Date','Local est credits','Official credits','Variance','Variance %','Coverage %','Status') `
-        -AccessibleName 'Local and official daily reconciliation'
+        -Columns @('Date','Local est credits','Reported credits','Variance','Variance %','Coverage %','Status') `
+        -AccessibleName 'Local and downloaded daily usage comparison'
     $reconcileGrid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
     $reconcileWidths = @(105, 145, 135, 125, 120, 120, 155)
     for ($columnIndex = 0; $columnIndex -lt $reconcileWidths.Count; $columnIndex++) {
@@ -3757,7 +3893,7 @@ function Show-ControlCenterDialog {
     function Refresh-ReconciliationGrid {
         $reconcileGrid.Rows.Clear()
         if ($null -eq $script:officialSnapshot) {
-            $officialStatusLabel.Text = 'Official report: not imported. Choose a local CSV/JSON or place one in the watched folder.'
+            $officialStatusLabel.Text = 'Downloaded report: not imported. Choose a local CSV/JSON or place one in the watched folder.'
             $officialStatusLabel.ForeColor = $uiTextMuted
             return
         }
@@ -3786,7 +3922,7 @@ function Show-ControlCenterDialog {
     $importOfficialButton.Add_Click({
         $openDialog = New-Object System.Windows.Forms.OpenFileDialog
         try {
-            $openDialog.Title = 'Open downloaded official usage snapshot'
+            $openDialog.Title = 'Open my downloaded usage report'
             $openDialog.Filter = 'Usage snapshots (*.csv;*.json)|*.csv;*.json|All files (*.*)|*.*'
             $openDialog.CheckFileExists = $true
             if ($openDialog.ShowDialog($dialog) -ne [System.Windows.Forms.DialogResult]::OK) { return }
@@ -3798,7 +3934,7 @@ function Show-ControlCenterDialog {
             Refresh-ReconciliationGrid
         }
         catch {
-            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to import official report') | Out-Null
+            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to import downloaded report') | Out-Null
         }
         finally { $openDialog.Dispose() }
     })
@@ -3949,6 +4085,13 @@ function Show-ControlCenterDialog {
         $guardReadinessLabel.Text = 'Trigger: {0:N4} / {1:N4} {2} | Scope: {3} exact path(s) | Running matches: {4} | Grace: {5}s' -f `
             [decimal]$script:guardStatus.Value, [decimal]$script:guardPolicy.Threshold, [string]$script:guardPolicy.Metric, `
             [int]$guardReadiness.ApprovedPathCount, [int]$guardReadiness.RunningMatchCount, [int]$script:guardPolicy.GraceSeconds
+        if ([string]$guardReadiness.StatusCode -eq 'Armed' -and
+            -not [bool]$script:startupRegistration.MatchesLauncher) {
+            $guardReadinessLabel.Text += [Environment]::NewLine +
+                'Guard is not always available because the monitor does not start when you sign in.'
+            $guardReadinessLabel.ForeColor = $uiWarning
+        }
+        else { $guardReadinessLabel.ForeColor = $uiTextSecondary }
         try {
             $guardStateLabel.AccessibilityNotifyClients([System.Windows.Forms.AccessibleEvents]::NameChange, -1)
         }
@@ -4046,19 +4189,19 @@ function Show-ControlCenterDialog {
     # Model mix and provenance
     $provenanceTab = New-ControlCenterTab 'Sources'
     $sourceNote = Add-ControlCenterLabel -Parent $provenanceTab `
-        -Text 'Source labels prevent estimates, imported official values, and enterprise aggregates from being mistaken for one another.' `
+        -Text 'Source labels keep local estimates and your downloaded reports from being mixed together.' `
         -X 14 -Y 14 -Width 1008 -Height 26 -Size 10 -Color $uiTextSecondary
-    $workspaceSourceButton = Add-ControlCenterButton -Parent $provenanceTab -Text 'Open &Workspace Analytics' -X 14 -Y 46 -Width 196
-    $complianceSourceButton = Add-ControlCenterButton -Parent $provenanceTab -Text 'Open &Compliance export' -X 222 -Y 46 -Width 196
-    $workspaceSourceButton.AccessibleDescription = 'Open one or more local Workspace Analytics CSV reports in the aggregate enterprise view.'
-    $complianceSourceButton.AccessibleDescription = 'Open a local Compliance JSONL export and organization-approved field mapping in a content-free aggregate view.'
+    $workspaceSourceButton = Add-ControlCenterButton -Parent $provenanceTab -Text 'Open &usage summary' -X 14 -Y 46 -Width 196
+    $complianceSourceButton = Add-ControlCenterButton -Parent $provenanceTab -Text 'Open &activity export' -X 222 -Y 46 -Width 196
+    $workspaceSourceButton.AccessibleDescription = 'Open one or more local usage-summary CSV reports filtered to this individual.'
+    $complianceSourceButton.AccessibleDescription = 'Open a local personal activity JSONL export and advanced field mapping.'
     $workspaceSourceButton.Add_Click({
         try { Show-EnterpriseAnalyticsDialog }
-        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to open Workspace Analytics') | Out-Null }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to open my usage summary') | Out-Null }
     })
     $complianceSourceButton.Add_Click({
         try { Show-ComplianceAnalyticsDialog }
-        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to open Compliance export') | Out-Null }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to open my activity export') | Out-Null }
     })
     $sourcePanel = New-Object System.Windows.Forms.Panel
     $sourcePanel.Location = New-Object System.Drawing.Point(14, 88)
@@ -4084,10 +4227,10 @@ function Show-ControlCenterDialog {
     [void]$sourceGrid.Rows.Add('Aggregate history',$(if ($DisablePersistence) { 'Disabled' } else { 'Local only' }),$script:statePaths.AggregateStore,'Dates and counters only; no prompts, IDs, sessions, or paths inside the file.')
     if ($null -ne $script:officialSnapshot) {
         $officialFreshness = Get-OfficialSnapshotFreshness -ReportUpdatedAt ([datetime]$script:officialSnapshot.ReportUpdatedAt)
-        [void]$sourceGrid.Rows.Add('Imported official report',$officialFreshness.Label,$script:officialSnapshot.ReportUpdatedAt.ToString('g'),'Downloaded outside this app, then sanitized and reconciled locally.')
+        [void]$sourceGrid.Rows.Add('Downloaded usage report',$officialFreshness.Label,$script:officialSnapshot.ReportUpdatedAt.ToString('g'),'Downloaded outside this app, then sanitized and compared locally.')
     }
     else {
-        [void]$sourceGrid.Rows.Add('Imported official report','Not imported','-', 'Optional local CSV/JSON; the app never fetches it.')
+        [void]$sourceGrid.Rows.Add('Downloaded usage report','Not imported','-', 'Optional local CSV/JSON; the app never fetches it.')
     }
     $modelPanel = New-Object System.Windows.Forms.Panel
     $modelPanel.Location = New-Object System.Drawing.Point(14, 282)
@@ -4137,12 +4280,279 @@ function Show-ControlCenterDialog {
         'State root:'
         '  ' + $script:statePaths.Root
         ''
-        'Watched official-report folder:'
+        'Watched downloaded-report folder:'
         '  ' + $script:statePaths.OfficialReports
     )
     [void]$privacyBox.Items.AddRange([object[]]$privacyLines)
     $privacyBox.AccessibleName = 'Privacy and zero-cost contract'
     $provenanceTab.Controls.Add($privacyBox)
+
+    # Personal backup, startup, diagnostics, RTK coverage, and guard reliability
+    $settingsTab = New-ControlCenterTab 'Settings'
+    $settingsTab.AutoScroll = $true
+    [void](Add-ControlCenterLabel -Parent $settingsTab -Text 'Personal settings' -X 14 -Y 12 -Width 1008 -Height 28 `
+        -Size 11 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold))
+    [void](Add-ControlCenterLabel -Parent $settingsTab `
+        -Text 'This monitor is for this Windows user only. Backups and diagnostics remain local and contain no raw Codex session logs.' `
+        -X 14 -Y 40 -Width 1008 -Height 24 -Size 9 -Color $uiAccent)
+
+    $settingsLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $settingsLayout.Location = New-Object System.Drawing.Point(8, 70)
+    $settingsLayout.Size = New-Object System.Drawing.Size(1020, 490)
+    $settingsLayout.Anchor = 'Top,Left'
+    $settingsLayout.ColumnCount = 2
+    $settingsLayout.RowCount = 2
+    $settingsLayout.ColumnStyles.Clear()
+    $settingsLayout.RowStyles.Clear()
+    foreach ($width in @(50,50)) {
+        $columnStyle = New-Object System.Windows.Forms.ColumnStyle
+        $columnStyle.SizeType = [System.Windows.Forms.SizeType]::Percent
+        $columnStyle.Width = $width
+        [void]$settingsLayout.ColumnStyles.Add($columnStyle)
+    }
+    foreach ($height in @(50,50)) {
+        $rowStyle = New-Object System.Windows.Forms.RowStyle
+        $rowStyle.SizeType = [System.Windows.Forms.SizeType]::Percent
+        $rowStyle.Height = $height
+        [void]$settingsLayout.RowStyles.Add($rowStyle)
+    }
+    $settingsTab.Controls.Add($settingsLayout)
+
+    function New-PersonalSettingsSection {
+        param([string]$Title, [int]$Column, [int]$Row)
+        $panel = New-Object System.Windows.Forms.Panel
+        $panel.Dock = [System.Windows.Forms.DockStyle]::Fill
+        $panel.Margin = New-Object System.Windows.Forms.Padding(6)
+        $panel.BackColor = $uiWindow
+        $panel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+        $panel.AccessibleName = $Title
+        $sectionTitle = Add-ControlCenterLabel -Parent $panel -Text $Title -X 14 -Y 10 -Width 450 -Height 26 `
+            -Size 10.5 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold)
+        $sectionTitle.UseMnemonic = $false
+        $settingsLayout.Controls.Add($panel, $Column, $Row)
+        return $panel
+    }
+
+    $backupPanel = New-PersonalSettingsSection -Title 'Backup & restore' -Column 0 -Row 0
+    $backupStatusLabel = Add-ControlCenterLabel -Parent $backupPanel -Text 'No backup created from this app yet.' `
+        -X 14 -Y 42 -Width 458 -Height 42 -Size 9 -Color $uiTextSecondary
+    [void](Add-ControlCenterLabel -Parent $backupPanel `
+        -Text 'Includes settings and aggregate history only; excludes raw logs, prompts, responses, and imported source files.' `
+        -X 14 -Y 84 -Width 458 -Height 40 -Size 8.5 -Color $uiTextMuted)
+    $backupNowButton = Add-ControlCenterButton -Parent $backupPanel -Text '&Back up now...' -X 14 -Y 138 -Width 138
+    $restoreBackupButton = Add-ControlCenterButton -Parent $backupPanel -Text '&Restore backup...' -X 162 -Y 138 -Width 148
+    $openBackupButton = Add-ControlCenterButton -Parent $backupPanel -Text 'Open backup &folder' -X 320 -Y 138 -Width 152
+
+    $startupPanel = New-PersonalSettingsSection -Title 'Start with Windows' -Column 1 -Row 0
+    $startAtSignInCheck = New-Object System.Windows.Forms.CheckBox
+    $startAtSignInCheck.Text = 'Start Live Codex Usage when I sign in'
+    $startAtSignInCheck.Location = New-Object System.Drawing.Point(14, 44)
+    $startAtSignInCheck.Size = New-Object System.Drawing.Size(430, 26)
+    $startAtSignInCheck.ForeColor = $uiText
+    $startupPanel.Controls.Add($startAtSignInCheck)
+    $startMinimizedCheck = New-Object System.Windows.Forms.CheckBox
+    $startMinimizedCheck.Text = 'Start minimized to the system tray'
+    $startMinimizedCheck.Location = New-Object System.Drawing.Point(32, 74)
+    $startMinimizedCheck.Size = New-Object System.Drawing.Size(410, 26)
+    $startMinimizedCheck.Checked = [bool]$script:personalSettings.StartMinimizedToTray
+    $startMinimizedCheck.ForeColor = $uiTextSecondary
+    $startupPanel.Controls.Add($startMinimizedCheck)
+    $startupStatusLabel = Add-ControlCenterLabel -Parent $startupPanel -Text '' `
+        -X 14 -Y 108 -Width 458 -Height 42 -Size 9 -Color $uiTextSecondary
+    $saveStartupButton = Add-ControlCenterButton -Parent $startupPanel -Text '&Save startup setting' -X 14 -Y 158 -Width 170
+    $startupGuardWarning = Add-ControlCenterLabel -Parent $startupPanel -Text '' `
+        -X 198 -Y 154 -Width 274 -Height 54 -Size 8.5 -Color $uiWarning
+    $startupGuardWarning.AutoEllipsis = $false
+
+    $diagnosticsPanel = New-PersonalSettingsSection -Title 'Diagnostics & privacy' -Column 0 -Row 1
+    $diagnosticsGrid = New-Object System.Windows.Forms.DataGridView
+    $diagnosticsGrid.Location = New-Object System.Drawing.Point(14, 42)
+    $diagnosticsGrid.Size = New-Object System.Drawing.Size(458, 128)
+    $diagnosticsGrid.Anchor = 'Top,Left,Right'
+    $diagnosticsGrid.ReadOnly = $true
+    $diagnosticsGrid.AllowUserToAddRows = $false
+    $diagnosticsGrid.AllowUserToDeleteRows = $false
+    $diagnosticsGrid.RowHeadersVisible = $false
+    $diagnosticsGrid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
+    [void]$diagnosticsGrid.Columns.Add('Check','Check')
+    [void]$diagnosticsGrid.Columns.Add('Status','Status')
+    [void]$diagnosticsGrid.Columns.Add('Detail','Detail')
+    $diagnosticsGrid.Columns['Check'].Width = 130
+    $diagnosticsGrid.Columns['Status'].Width = 70
+    $diagnosticsGrid.Columns['Detail'].Width = 235
+    $diagnosticsGrid.AccessibleName = 'Sanitized personal health checks'
+    Set-GridTheme -DataGrid $diagnosticsGrid
+    $diagnosticsPanel.Controls.Add($diagnosticsGrid)
+    $runDiagnosticsButton = Add-ControlCenterButton -Parent $diagnosticsPanel -Text 'Run &health check' -X 14 -Y 180 -Width 150
+    $exportDiagnosticsButton = Add-ControlCenterButton -Parent $diagnosticsPanel -Text '&Export sanitized...' -X 174 -Y 180 -Width 164
+    $diagnosticsStatusLabel = Add-ControlCenterLabel -Parent $diagnosticsPanel -Text 'No paths, usernames, prompts, or responses are included.' `
+        -X 348 -Y 180 -Width 124 -Height 42 -Size 7.5 -Color $uiTextMuted
+    $diagnosticsStatusLabel.AutoEllipsis = $false
+
+    $reliabilityPanel = New-PersonalSettingsSection -Title 'RTK coverage & guard reliability' -Column 1 -Row 1
+    $personalRtkLabel = Add-ControlCenterLabel -Parent $reliabilityPanel -Text '' `
+        -X 14 -Y 44 -Width 458 -Height 54 -Size 9 -Color $uiTextSecondary
+    $personalGuardLabel = Add-ControlCenterLabel -Parent $reliabilityPanel -Text '' `
+        -X 14 -Y 102 -Width 458 -Height 58 -Size 9 -Color $uiTextSecondary
+    $personalRtkLabel.AutoEllipsis = $false
+    $personalGuardLabel.AutoEllipsis = $false
+    $openRtkHealthButton = Add-ControlCenterButton -Parent $reliabilityPanel -Text 'Open &RTK health' -X 14 -Y 176 -Width 152
+    $openUsageGuardButton = Add-ControlCenterButton -Parent $reliabilityPanel -Text 'Open usage &guard' -X 176 -Y 176 -Width 158
+    [void](Add-ControlCenterLabel -Parent $reliabilityPanel `
+        -Text 'Guard enforcement works only while this monitor is running.' `
+        -X 344 -Y 176 -Width 128 -Height 42 -Size 7.5 -Color $uiTextMuted)
+
+    function Refresh-PersonalSettingsTab {
+        try { $script:startupRegistration = Test-PersonalStartupRegistration -LauncherPath $script:launcherPath }
+        catch {
+            $script:startupRegistration = [pscustomobject]@{
+                Registered = $false; MatchesLauncher = $false; RegistrationPath = ''; Status = 'Unavailable'
+            }
+        }
+        $startAtSignInCheck.Checked = [bool]$script:startupRegistration.MatchesLauncher
+        $startMinimizedCheck.Enabled = $startAtSignInCheck.Checked
+        $startupStatusLabel.Text = if ($script:startupRegistration.MatchesLauncher) {
+            'Enabled for this Windows account; no administrator permission is required.'
+        }
+        elseif ($script:startupRegistration.Registered) {
+            'A startup entry exists but does not match this installation. Save to repair it.'
+        }
+        else { 'Off. The monitor will not start automatically when you sign in.' }
+        $startupStatusLabel.ForeColor = if ($script:startupRegistration.MatchesLauncher) { $uiSuccess } else { $uiTextSecondary }
+
+        $backupStatusLabel.Text = if ($null -ne $script:personalSettings.LastBackupAt -and
+            -not [string]::IsNullOrWhiteSpace([string]$script:personalSettings.LastBackupAt)) {
+            'Last backup created {0}. Integrity hashes are verified during restore.' -f ([datetime]$script:personalSettings.LastBackupAt).ToString('g')
+        }
+        else { 'No backup created from this app yet.' }
+
+        $guardReadiness = Get-UsageGuardReadiness -Policy $script:guardPolicy
+        $startupGuardWarning.Text = if ([string]$guardReadiness.StatusCode -eq 'Armed' -and
+            -not [bool]$script:startupRegistration.MatchesLauncher) {
+            'Guard is not always available because the monitor does not start when you sign in.'
+        }
+        else { '' }
+        $shellCalls = @($script:integrationEvents | Where-Object Name -eq 'Local shell').Count
+        $personalRtkLabel.Text = 'RTK: {0}. Tracked commands {1:N0}; local-shell records in loaded Codex history {2:N0}; failures {3:N0}. Savings are byte estimates.' -f `
+            $script:rtkSnapshot.HealthLabel, [int64]$script:rtkSnapshot.TotalCommands, $shellCalls, [int]$script:rtkSnapshot.FailureCount
+        $personalRtkLabel.ForeColor = if ($script:rtkSnapshot.Working) { $uiSuccess } else { $uiWarning }
+        $personalGuardLabel.Text = 'Guard: {0}. Exact paths {1}; current matches {2}. {3}' -f `
+            $guardReadiness.StatusLabel, $guardReadiness.ApprovedPathCount, $guardReadiness.RunningMatchCount, `
+            $(if ($script:startupRegistration.MatchesLauncher) { 'Start-at-sign-in is enabled.' } else { 'Start-at-sign-in is off.' })
+        $personalGuardLabel.ForeColor = if ($guardReadiness.StatusCode -in @('Armed','Advisory')) { $uiWarning } else { $uiTextSecondary }
+
+        if ($script:diagnosticRows.Count -eq 0) { [void](Update-PersonalDiagnostics) }
+        $diagnosticsGrid.Rows.Clear()
+        foreach ($row in @($script:diagnosticRows)) {
+            $index = $diagnosticsGrid.Rows.Add($row.Check, $row.Status, $row.Detail)
+            if ($row.Status -in @('Failure','Warning')) { $diagnosticsGrid.Rows[$index].DefaultCellStyle.ForeColor = $uiWarning }
+            elseif ($row.Status -eq 'OK') { $diagnosticsGrid.Rows[$index].DefaultCellStyle.ForeColor = $uiSuccess }
+        }
+        try { $startupStatusLabel.AccessibilityNotifyClients([System.Windows.Forms.AccessibleEvents]::NameChange, -1) } catch { }
+    }
+
+    $startAtSignInCheck.Add_CheckedChanged({
+        $startMinimizedCheck.Enabled = $startAtSignInCheck.Checked
+        if (-not $startAtSignInCheck.Checked) { $startMinimizedCheck.Checked = $false }
+    })
+    $saveStartupButton.Add_Click({
+        try {
+            $script:startupRegistration = Set-PersonalStartupRegistration `
+                -Enabled ([bool]$startAtSignInCheck.Checked) `
+                -LauncherPath $script:launcherPath
+            $script:personalSettings.StartAtSignIn = [bool]$script:startupRegistration.MatchesLauncher
+            $script:personalSettings.StartMinimizedToTray = [bool]$startMinimizedCheck.Checked
+            Save-PersonalSettingsState
+            $script:diagnosticRows = @()
+            Refresh-PersonalSettingsTab
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to save startup setting') | Out-Null }
+    })
+    $backupNowButton.Add_Click({
+        $folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        try {
+            $folderDialog.Description = 'Choose a local folder for the personal monitor backup'
+            if (Test-Path -LiteralPath $script:statePaths.Backups -PathType Container) {
+                $folderDialog.SelectedPath = $script:statePaths.Backups
+            }
+            if ($folderDialog.ShowDialog($dialog) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+            $backup = Export-PersonalMonitorBackup -StateRoot $script:statePaths.Root `
+                -DestinationDirectory $folderDialog.SelectedPath -AppVersion $script:appVersion
+            $script:personalSettings.LastBackupAt = $backup.CreatedAt.ToString('o')
+            Save-PersonalSettingsState
+            $backupStatusLabel.Text = 'Backup created and verified: ' + (Split-Path -Leaf $backup.Path)
+            $backupStatusLabel.ForeColor = $uiSuccess
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to create backup') | Out-Null }
+        finally { $folderDialog.Dispose() }
+    })
+    $restoreBackupButton.Add_Click({
+        $openDialog = New-Object System.Windows.Forms.OpenFileDialog
+        try {
+            $openDialog.Title = 'Restore a personal monitor backup'
+            $openDialog.Filter = 'Live Codex backup (*.zip)|*.zip'
+            $openDialog.CheckFileExists = $true
+            if ($openDialog.ShowDialog($dialog) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+            $preview = Get-PersonalMonitorBackupPreview -Path $openDialog.FileName
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                ('Restore backup from {0:g} (version {1}) containing {2}? ' +
+                    'An automatic pre-restore backup will be created first.') -f `
+                    $preview.CreatedAt, $(if ($preview.AppVersion) { $preview.AppVersion } else { 'unknown' }), ($preview.Files -join ', '),
+                'Confirm personal restore',
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+            $result = Import-PersonalMonitorBackup -Path $openDialog.FileName `
+                -StateRoot $script:statePaths.Root `
+                -PreRestoreBackupDirectory $script:statePaths.Backups `
+                -AppVersion $script:appVersion -Confirm:$false
+            $script:personalSettings = Import-PersonalMonitorSettings -Path $script:statePaths.PersonalSettings
+            $script:guardPolicy = Import-UsageGuardPolicy -Path $script:statePaths.GuardPolicy
+            $script:costProfile = Import-UsageCostProfile -Path $script:statePaths.CostProfile
+            $script:lastCostKey = ''
+            $script:diagnosticRows = @()
+            Refresh-PersonalSettingsTab
+            [System.Windows.Forms.MessageBox]::Show(
+                ('Restored {0} file(s). Active settings were reloaded; restart the monitor if any display looks stale.' -f $result.Files),
+                'Personal backup restored'
+            ) | Out-Null
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to restore backup') | Out-Null }
+        finally { $openDialog.Dispose() }
+    })
+    $openBackupButton.Add_Click({
+        try {
+            if (-not (Test-Path -LiteralPath $script:statePaths.Backups -PathType Container)) {
+                [void](New-Item -ItemType Directory -Path $script:statePaths.Backups)
+            }
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $script:statePaths.Backups)
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to open backup folder') | Out-Null }
+    })
+    $runDiagnosticsButton.Add_Click({
+        [void](Update-RtkSavingsState -Force)
+        $script:diagnosticRows = @()
+        Refresh-PersonalSettingsTab
+    })
+    $exportDiagnosticsButton.Add_Click({
+        $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+        try {
+            $saveDialog.Title = 'Export sanitized personal diagnostics'
+            $saveDialog.Filter = 'JSON files (*.json)|*.json'
+            $saveDialog.FileName = 'live-codex-diagnostics-{0}.json' -f (Get-Date).ToString('yyyyMMdd-HHmmss')
+            if ($saveDialog.ShowDialog($dialog) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+            if ($script:diagnosticRows.Count -eq 0) { [void](Update-PersonalDiagnostics) }
+            [void](Export-PersonalDiagnosticReport -Rows $script:diagnosticRows -Path $saveDialog.FileName -AppVersion $script:appVersion)
+            $diagnosticsStatusLabel.Text = 'Sanitized diagnostics exported locally.'
+            $diagnosticsStatusLabel.ForeColor = $uiSuccess
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to export diagnostics') | Out-Null }
+        finally { $saveDialog.Dispose() }
+    })
+    $openRtkHealthButton.Add_Click({ $tabs.SelectedIndex = 2 })
+    $openUsageGuardButton.Add_Click({ $tabs.SelectedIndex = 5 })
+    Refresh-PersonalSettingsTab
 
     $dialog.Add_KeyDown({
         if ($_.KeyCode -eq [System.Windows.Forms.Keys]::Escape) {
@@ -4310,10 +4720,10 @@ $loadRangeButton.Add_Click({ Invoke-LoadSelectedRange })
 $exportButton.Add_Click({ Invoke-LocalSummaryExport })
 $enterpriseButton.Add_Click({
     try {
-        Show-EnterpriseAnalyticsDialog
+        Show-PersonalImportDialog
     }
     catch {
-        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to import Workspace Analytics') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to import my data') | Out-Null
     }
 })
 $controlCenterButton.Add_Click({
@@ -4381,11 +4791,13 @@ if ($null -ne $script:notifyIcon) {
     [void]$script:trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
     $exitItem = $script:trayMenu.Items.Add('Exit monitor')
     $showItem.Add_Click({
+        $form.ShowInTaskbar = $true
         $form.Show()
         $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
         $form.Activate()
     })
     $miniItem.Add_Click({
+        $form.ShowInTaskbar = $true
         $form.Show()
         $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
         Set-MiniMode -Enabled $true
@@ -4400,6 +4812,7 @@ if ($null -ne $script:notifyIcon) {
     $exitItem.Add_Click({ $form.Close() })
     $script:notifyIcon.ContextMenuStrip = $script:trayMenu
     $script:notifyIcon.Add_DoubleClick({
+        $form.ShowInTaskbar = $true
         $form.Show()
         $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
         $form.Activate()
@@ -4439,16 +4852,26 @@ $startupRefresh = [System.Windows.Forms.MethodInvoker]{
         $explainBox.Text = $_.Exception.Message
     }
     finally {
-        # Keep the window available while the first local-only scan runs, then
-        # restore it in case a launcher briefly changed its window state.
-        $form.Show()
-        $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
-        $form.Activate()
-        $startupRestoreTimer.Start()
+        if ($StartMinimizedToTray -and $null -ne $script:notifyIcon) {
+            $form.Hide()
+            $form.ShowInTaskbar = $false
+        }
+        else {
+            # Keep the window available while the first local-only scan runs,
+            # then restore it in case a launcher briefly changed its state.
+            $form.Show()
+            $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+            $form.Activate()
+            $startupRestoreTimer.Start()
+        }
         $timer.Start()
     }
 }
 $form.Add_Shown({
+    if ($StartMinimizedToTray -and $null -ne $script:notifyIcon) {
+        $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
+        $form.ShowInTaskbar = $false
+    }
     if ($StartMini -and -not $script:isMiniMode) {
         Set-MiniMode -Enabled $true
     }

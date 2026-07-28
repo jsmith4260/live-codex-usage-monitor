@@ -12,9 +12,9 @@ function Get-MonitorPrivacyContract {
         LocalInputs = @(
             'Existing Codex JSONL logs',
             'Local RTK aggregate savings and health counters',
-            'User-selected local official usage snapshots',
-            'User-selected local Workspace Analytics exports',
-            'User-selected local Compliance exports'
+            'User-selected local personal usage summaries',
+            'User-selected local personal activity exports',
+            'User-selected local downloaded usage reports'
         )
         NeverPersist = @(
             'Prompt text',
@@ -67,6 +67,9 @@ function Get-MonitorStatePaths {
         AggregateStore = Join-Path $resolvedRoot 'aggregate-v1.json'
         GuardPolicy = Join-Path $resolvedRoot 'guard-policy-v1.json'
         CostProfile = Join-Path $resolvedRoot 'cost-profile-v1.json'
+        PersonalSettings = Join-Path $resolvedRoot 'personal-settings-v1.json'
+        Backups = Join-Path $resolvedRoot 'backups'
+        Diagnostics = Join-Path $resolvedRoot 'diagnostics'
         OfficialReports = Join-Path $resolvedRoot 'official-reports'
     }
 }

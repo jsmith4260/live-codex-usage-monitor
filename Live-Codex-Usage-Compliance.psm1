@@ -48,6 +48,7 @@ function Convert-ComplianceExport {
     }
 
     $groups = @{}
+    $allUsers = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     [int64]$inputRows = 0
     [int64]$invalidLines = 0
     foreach ($line in Get-Content -LiteralPath $InputPath -ReadCount 1) {
@@ -83,6 +84,7 @@ function Convert-ComplianceExport {
             # The raw identifier exists only in this in-memory set. It is never
             # copied into an output object or written to disk.
             [void]$groups[$key].Users.Add($userId)
+            [void]$allUsers.Add($userId)
         }
     }
 
@@ -111,8 +113,30 @@ function Convert-ComplianceExport {
         InputRows = $inputRows
         InvalidLines = $invalidLines
         OutputRows = @($rows).Count
+        UniqueUsers = $allUsers.Count
         Rows = @($rows)
     }
 }
 
-Export-ModuleMember -Function Convert-ComplianceExport
+function Convert-PersonalActivityExport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+        [string]$InputPath,
+        [Parameter(Mandatory = $true)]
+        [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
+        [string]$MappingPath
+    )
+
+    $result = Convert-ComplianceExport -InputPath $InputPath -MappingPath $MappingPath
+    if ([int]$result.UniqueUsers -gt 1) {
+        throw ('This activity export contains {0} identities. Personal mode accepts only an export filtered to your own account.' -f $result.UniqueUsers)
+    }
+    return $result
+}
+
+Export-ModuleMember -Function @(
+    'Convert-ComplianceExport',
+    'Convert-PersonalActivityExport'
+)

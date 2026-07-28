@@ -47,6 +47,7 @@ $releaseItems = @(
     'Live-Codex-Usage-Compliance.psm1',
     'Live-Codex-Usage-Cost.psm1',
     'Live-Codex-Usage-Guard.psm1',
+    'Live-Codex-Usage-Personal.psm1',
     'Live-Codex-Usage-Privacy.psm1',
     'Live-Codex-Usage-RTK.psm1',
     'Live-Codex-Usage-Reconciliation.psm1',
