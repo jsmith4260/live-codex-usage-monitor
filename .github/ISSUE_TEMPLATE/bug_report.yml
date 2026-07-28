@@ -15,7 +15,7 @@ body:
     attributes:
       label: Monitor version
       description: Find this in Control Center > Sources or the VERSION file.
-      placeholder: "3.4.0"
+      placeholder: "3.4.1"
     validations:
       required: true
   - type: dropdown

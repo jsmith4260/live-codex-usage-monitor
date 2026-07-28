@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.4.1 - 2026-07-28
+
+### Release pipeline
+
+- Make the GitHub Release existence probe non-terminating under Windows PowerShell while preserving hard failures for release creation, asset upload, and release editing.
+- Publish the completed Windows Reliability & Distribution phase without rewriting the already-pushed `v3.4.0` tag from its failed publication attempt.
+
 ## 3.4.0 - 2026-07-28
 
 ### Windows reliability

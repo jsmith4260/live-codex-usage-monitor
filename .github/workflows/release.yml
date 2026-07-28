@@ -84,8 +84,16 @@ jobs:
             '.\artifacts\live-codex-usage-monitor-windows.zip'
             '.\artifacts\live-codex-usage-monitor-windows.zip.sha256'
           )
-          & gh release view $tag --json tagName 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) {
+          $previousErrorAction = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = 'SilentlyContinue'
+            & gh release view $tag --json tagName 2>$null | Out-Null
+            $releaseExists = ($LASTEXITCODE -eq 0)
+          }
+          finally {
+            $ErrorActionPreference = $previousErrorAction
+          }
+          if ($releaseExists) {
             & gh release upload $tag @assets --clobber
             if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
             & gh release edit $tag --latest --title "Live Codex Usage Monitor $version" `
