@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.4.2 - 2026-07-28
+
+### Licensing
+
+- Adopt the MIT License and identify `jsmith4260` as the 2026 copyright holder.
+- Include the license in every Windows release package and link it from the README.
+
 ## 3.4.1 - 2026-07-28
 
 ### Release pipeline
