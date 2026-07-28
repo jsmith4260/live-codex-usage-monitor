@@ -1,0 +1,75 @@
+{
+  "SchemaVersion": 1,
+  "EffectiveDate": "2026-04-23",
+  "RetrievedDate": "2026-07-27",
+  "Currency": "USD",
+  "SourceTitle": "OpenAI Codex rate card and API model pricing",
+  "SourceUrl": "https://help.openai.com/en/articles/20001106-codex-rate-card",
+  "ApiPricingSourceUrl": "https://developers.openai.com/api/docs/models/compare",
+  "Explanation": "Credits are estimated from the published Codex rate card. API-equivalent USD is shown only where the current official comparison page publishes a standard API rate, and is not an invoice. Actual cash cost is calculated only when the user supplies dollars per credit.",
+  "Models": [
+    {
+      "Id": "gpt-5.6-sol",
+      "Aliases": ["gpt-5.6-sol-latest"],
+      "ApiEquivalentAvailable": true,
+      "CreditsPerMillion": { "Input": 125.0, "CachedInput": 12.5, "Output": 750.0 },
+      "ApiUsdPerMillion": { "Input": 5.0, "CachedInput": 0.5, "Output": 30.0 }
+    },
+    {
+      "Id": "gpt-5.6-terra",
+      "Aliases": ["gpt-5.6-terra-latest"],
+      "ApiEquivalentAvailable": true,
+      "CreditsPerMillion": { "Input": 62.5, "CachedInput": 6.25, "Output": 375.0 },
+      "ApiUsdPerMillion": { "Input": 2.5, "CachedInput": 0.25, "Output": 15.0 }
+    },
+    {
+      "Id": "gpt-5.6-luna",
+      "Aliases": ["gpt-5.6-luna-latest"],
+      "ApiEquivalentAvailable": true,
+      "CreditsPerMillion": { "Input": 25.0, "CachedInput": 2.5, "Output": 150.0 },
+      "ApiUsdPerMillion": { "Input": 1.0, "CachedInput": 0.1, "Output": 6.0 }
+    },
+    {
+      "Id": "gpt-5.5",
+      "Aliases": ["gpt-5.5-latest"],
+      "ApiEquivalentAvailable": false,
+      "CreditsPerMillion": { "Input": 125.0, "CachedInput": 12.5, "Output": 750.0 },
+      "ApiUsdPerMillion": { "Input": 5.0, "CachedInput": 0.5, "Output": 30.0 }
+    },
+    {
+      "Id": "gpt-5.5-cyber",
+      "Aliases": ["gpt-5.5-cyber-latest"],
+      "ApiEquivalentAvailable": false,
+      "CreditsPerMillion": { "Input": 500.0, "CachedInput": 50.0, "Output": 3000.0 },
+      "ApiUsdPerMillion": { "Input": 20.0, "CachedInput": 2.0, "Output": 120.0 }
+    },
+    {
+      "Id": "gpt-5.4",
+      "Aliases": ["gpt-5.4-latest"],
+      "ApiEquivalentAvailable": false,
+      "CreditsPerMillion": { "Input": 62.5, "CachedInput": 6.25, "Output": 375.0 },
+      "ApiUsdPerMillion": { "Input": 2.5, "CachedInput": 0.25, "Output": 15.0 }
+    },
+    {
+      "Id": "gpt-5.4-mini",
+      "Aliases": ["gpt-5.4-mini-latest"],
+      "ApiEquivalentAvailable": false,
+      "CreditsPerMillion": { "Input": 18.75, "CachedInput": 1.875, "Output": 113.0 },
+      "ApiUsdPerMillion": { "Input": 0.75, "CachedInput": 0.075, "Output": 4.52 }
+    },
+    {
+      "Id": "gpt-5.3-codex",
+      "Aliases": ["gpt-5.3-codex-latest"],
+      "ApiEquivalentAvailable": false,
+      "CreditsPerMillion": { "Input": 43.75, "CachedInput": 4.375, "Output": 350.0 },
+      "ApiUsdPerMillion": { "Input": 1.75, "CachedInput": 0.175, "Output": 14.0 }
+    },
+    {
+      "Id": "gpt-5.2",
+      "Aliases": ["gpt-5.2-latest"],
+      "ApiEquivalentAvailable": false,
+      "CreditsPerMillion": { "Input": 43.75, "CachedInput": 4.375, "Output": 350.0 },
+      "ApiUsdPerMillion": { "Input": 1.75, "CachedInput": 0.175, "Output": 14.0 }
+    }
+  ]
+}

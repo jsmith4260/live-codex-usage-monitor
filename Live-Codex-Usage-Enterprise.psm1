@@ -125,10 +125,14 @@ function Import-WorkspaceAnalyticsReport {
     param(
         [Parameter(Mandatory = $true)]
         [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
-        [string]$Path
+        [string[]]$Path
     )
 
-    $rows = @(Import-Csv -LiteralPath $Path)
+    $rows = @(
+        foreach ($reportPath in $Path) {
+            Import-Csv -LiteralPath $reportPath
+        }
+    )
     if ($rows.Count -eq 0) { throw 'The Workspace Analytics CSV has no data rows.' }
 
     $activeIdentities = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
@@ -186,6 +190,9 @@ function Import-WorkspaceAnalyticsReport {
     $periodStart = if ($periodStarts.Count -gt 0) { @($periodStarts | Sort-Object | Select-Object -First 1)[0] } else { $null }
     $periodEnd = if ($periodEnds.Count -gt 0) { @($periodEnds | Sort-Object -Descending | Select-Object -First 1)[0] } else { $null }
     return [pscustomobject][ordered]@{
+        SourceKind = 'Workspace Analytics reports imported from local disk'
+        ReportUpdatedAt = @($Path | ForEach-Object { (Get-Item -LiteralPath $_).LastWriteTime } | Sort-Object -Descending | Select-Object -First 1)[0]
+        SourceReports = @($Path).Count
         Rows = $rows.Count
         ActiveUsers = $activeIdentities.Count
         TotalMessages = $totalMessages

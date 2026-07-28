@@ -1,10 +1,10 @@
 # Live Codex Usage Monitor
 
-An offline Windows dashboard for understanding local Codex usage telemetry and task activity. It reads the Codex session logs already stored on the workstation, then presents fresh token burn, replayed context, active tasks, quota windows, and local tool activity in one live view. Version 2 also opens approved ChatGPT Enterprise/Edu Workspace Analytics CSV exports in a separate aggregate-only view.
+An offline Windows dashboard for understanding local Codex usage telemetry, estimates, and task activity. It reads session logs already stored on the workstation, then presents fresh token burn, replayed context, active tasks, quota windows, local tool activity, trends, dated credit estimates, local official-report reconciliation, and an opt-in usage guard. It also opens one or more approved ChatGPT Enterprise/Edu Workspace Analytics CSV exports in a separate aggregate-only view.
 
 ## Purpose
 
-Use this monitor to understand the shape of local Codex work without changing that work. It helps distinguish fresh token use from replayed context, identify unusually large turns, and see which local tasks are active. It is operational telemetry, not billing data or an OpenAI invoice.
+Use this monitor to understand the shape of local Codex work without creating more ChatGPT work. It helps distinguish fresh token use from replayed context, identify unusually large turns, forecast usage, compare a downloaded official report with local estimates, and see which local tasks are active. Estimates are always labeled and are not an OpenAI invoice.
 
 ## Requirements
 
@@ -14,12 +14,14 @@ Use this monitor to understand the shape of local Codex work without changing th
 
 ## Privacy and safety
 
-- The monitor does not invoke Codex, call ChatGPT, or contact a network service.
-- It writes only when a user explicitly chooses a sanitized local CSV export or runs the offline Compliance export normalizer.
-- It reads existing local Codex JSONL session logs only.
+- The monitor does not invoke Codex, call ChatGPT, poll an account endpoint, or contact a network service.
+- Monitoring itself creates no ChatGPT messages, turns, tokens, credits, API requests, overages, agent activity, or other paid usage.
+- Its automatic live input is existing local Codex JSONL. Official, Workspace Analytics, and Compliance data enter only through explicit local-file workflows.
 - Prompt-derived task names are disabled by default. Tasks use timestamp/session labels unless the optional `-ShowPromptTaskTitles` switch is supplied.
 - Prompts, responses, tool arguments, tool output, credentials, client data, and working-directory paths are not persisted or transmitted.
 - Local CSV output contains daily counts and token totals only. It excludes task names, session IDs, source paths, prompts, responses, and tool data.
+- The optional persistent history under `%LOCALAPPDATA%\LiveCodexUsageMonitor` contains dates and aggregate counters only. It never contains prompts, responses, session names, account identifiers, or source paths. Use `-DisablePersistence` to turn it off.
+- `Test-ZeroOutbound.ps1` is a release gate that rejects outbound-request APIs in production PowerShell sources.
 
 ## Start it
 
@@ -81,6 +83,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 - Integration/tool activity counts by local shell, file edits, web, MCP/app/plugin names, waits, and plan updates.
 - OK/WARN/CRITICAL status, a matching color meter, quota reset countdowns, and an even-pace comparison when the log supplies a window duration.
 - Privacy-safe daily CSV export through **Export CSV**.
+- A system-tray menu with dashboard, mini-mode, Control Center, and exit actions.
+
+## Control Center
+
+Open **Control center** or press `Ctrl+I`.
+
+- **Trends**: daily fresh-token history, a trailing observed-day forecast, and a text table matching the chart.
+- **Heatmap**: local day/hour activity with both text and an accessible color-intensity cue.
+- **Cost**: official credit estimates for known models, API-equivalent USD only where a current official API rate is published, and optional contract parameters for a configured cash estimate.
+- **Reconcile**: local daily credit estimates versus a downloaded official CSV/JSON, with variance, coverage, and freshness labels.
+- **Usage guard**: disabled by default. Advisory mode warns; explicitly approved Enforced mode stops only exact user-approved Codex executable paths after a grace period.
+- **Sources**: provenance, model mix, state locations, and the privacy/zero-cost contract.
+
+The bundled rate card is dated. Unknown model names remain unpriced; the app never guesses a fallback unless you explicitly configure one. Fast or special service tiers can use a user-supplied multiplier. Actual dollars are shown only after you provide your own dollars-per-credit, included-credit, fixed-cost, and billing-cycle parameters.
+
+Official reporting is not real-time. Workspace Analytics normally refreshes in 1-24 hours, typically 6-12 hours, with a service target of up to 48 hours. The app labels report age and never fetches the report itself. Put approved snapshots in `%LOCALAPPDATA%\LiveCodexUsageMonitor\official-reports` or select a local file.
+
+See [offline cost, reconciliation, and guard details](docs/OFFLINE-COST-RECONCILIATION-GUARD.md).
 
 ## Reading the dashboard
 
@@ -97,6 +117,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 - `Ctrl+L`: load the selected date range.
 - `Ctrl+E`: export the visible privacy-safe daily summary.
 - `Ctrl+M`: toggle mini mode.
+- `Ctrl+I`: open the Control Center.
 - `F5`: refresh immediately.
 
 ## Status behavior
@@ -107,7 +128,9 @@ The header is **OK**, **WARN**, or **CRITICAL** based on the latest quota metada
 
 ChatGPT desktop, web, Excel, and PowerPoint do not write the same Codex JSONL token events. Reliable enterprise reporting should come from OpenAI workspace data rather than browser interception, process scraping, or keylogging.
 
-Click **Enterprise** and open a Workspace Analytics user CSV exported by an authorized ChatGPT Enterprise/Edu administrator. The separate view reports aggregate active users, message totals, seat types, departments, tools, and models. It never displays or returns names, email addresses, public IDs, or account IDs.
+Click **Enterprise CSV** and open one or more Workspace Analytics user CSVs exported by an authorized ChatGPT Enterprise/Edu administrator. The separate view reports aggregate active users, message totals, seat types, departments, tools, and models. It never displays or returns names, email addresses, public IDs, or account IDs.
+
+For approved Compliance exports, open **Control center > Sources > Open Compliance export** and select the local JSONL plus your organization's mapping file. The aggregate-only surface reports date, product surface (for example web or Excel when present in the source), event type, model, and counts; prompt/response content and raw user identifiers are discarded.
 
 See the [Enterprise data-source roadmap](docs/ENTERPRISE-DATA-SOURCES.md) for the supported architecture and [Compliance export normalizer](docs/COMPLIANCE-NORMALIZER.md) for the mapping-driven, content-free JSONL adapter. [Design and research decisions](docs/DESIGN-AND-RESEARCH.md) explains which ideas from comparable monitors were adopted or rejected.
 
@@ -128,11 +151,13 @@ The result contains date, surface, event type, model, event count, and unique-us
 
 - It does not call OpenAI.
 - It does not send local logs anywhere.
-- It does not persist telemetry unless a user explicitly requests one of the aggregate CSV outputs.
+- It does not persist raw telemetry. The enabled-by-default local history store contains aggregate daily counters only and can be disabled with `-DisablePersistence`.
 - It does not persist or send prompts, responses, tool arguments, tool output, credentials, client data, or working-directory paths. Prompt-derived task names are disabled by default; if explicitly enabled, they remain only in memory while the dashboard is open.
-- It is local telemetry, not an OpenAI invoice.
-- It does not estimate cost from a bundled pricing table.
-- It does not implement a live Compliance API collector without the organization’s current authenticated schema, approved service identity, and retention controls.
+- It does not claim estimates are an OpenAI invoice or account balance.
+- It does not silently price unknown models or assign an actual cash value to a credit.
+- It does not implement a live Compliance API collector without the organization's current authenticated schema, approved service identity, and retention controls.
+- It does not inspect browser cookies/history, Office documents, prompts, keystrokes, TLS traffic, or private account endpoints.
+- The local guard does not block ChatGPT web, Office add-ins, another device, or launches after the monitor exits. Enterprise-mandatory blocking belongs in approved workspace and endpoint policies.
 
 ## QA
 
@@ -148,9 +173,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -DateRangeSmokeTest
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -StatusSmokeTest
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -AlertSmokeTest
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -InsightsUiSmokeTest -DisablePersistence
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Test-ZeroOutbound.ps1
 ```
 
-The test wrapper uses deterministic local fixtures, checks child exit codes, verifies fresh-token semantics, exercises date ranges and archived logs, validates both quota windows, constructs both UIs, and proves that local, Workspace Analytics, and Compliance aggregate outputs do not expose fixture prompt text or direct identifiers.
+The test wrapper uses deterministic local fixtures, checks child exit codes, verifies fresh-token semantics, exercises date ranges and archived logs, validates both quota windows, constructs all UI surfaces, tests pricing/reconciliation/persistence/guard logic with fake processes, and proves that aggregate outputs do not expose fixture prompt text or direct identifiers.
 
 ## Build a release
 

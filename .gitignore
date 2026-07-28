@@ -6,6 +6,7 @@ sessions/
 *.log
 *.csv
 !tests/fixtures/**/*.csv
+!config/official-usage-snapshot-template.csv
 *.sqlite
 *.db
 

@@ -19,7 +19,7 @@ Use this source for:
 - app, tool, project, model-family, and skill usage;
 - monthly and weekly management reports.
 
-Version 2 implements the user-report CSV boundary. Click **Enterprise** in the dashboard and select the approved CSV. The importer recognizes the documented message, GPT, tool, project, model-map, tool-map, seat-type, department, period, and activity fields. Direct user identifiers are used only in memory for distinct counts and are not returned to the UI.
+Version 3 implements the user-report CSV boundary. Click **Enterprise CSV** in the dashboard and select one or more approved reports. The importer recognizes the documented message, GPT, tool, project, model-map, tool-map, seat-type, department, period, and activity fields. Direct user identifiers are used only in memory for distinct counts and are not returned to the UI.
 
 Official reference: [Workspace analytics for ChatGPT Enterprise and Edu](https://help.openai.com/en/articles/10875114-user-analytics-for-chatgpt-enterprise-and-edu)
 
@@ -64,10 +64,10 @@ The central collector should:
 
 ## Product phases
 
-1. **Complete:** accurate local Codex monitoring, active/archived history, arbitrary local date ranges, privacy-safe labels and exports, and deterministic Windows tests.
-2. **Complete:** Workspace Analytics CSV import into an aggregate-only enterprise dashboard without API credentials in the desktop application.
-3. **Boundary complete; service organization-specific:** the repository includes a mapping-driven offline Compliance JSONL normalizer. A live central collector still requires the organization’s current authenticated schema, least-privilege service identity, secret manager, checkpoint store, retention policy, and approved event allowlist.
-4. **Future decision:** replace the PowerShell UI with a signed .NET desktop application only if centralized deployment, auto-update, accessibility certification, and IT support justify the migration.
+1. **Complete:** accurate local Codex monitoring, active/archived history, arbitrary local date ranges, privacy-safe labels/exports, and deterministic Windows tests.
+2. **Complete:** one-or-more Workspace Analytics CSV import into an aggregate-only enterprise dashboard without API credentials in the endpoint application.
+3. **Complete local boundary:** mapping-driven offline Compliance JSONL normalization. A live central collector remains organization-specific and requires the current authenticated schema, least-privilege service identity, secret manager, checkpoint store, retention policy, and approved event allowlist.
+4. **Complete endpoint experience:** PowerShell/WinForms Control Center, persistent aggregate-only trends, official local-report reconciliation, cost parameters, provenance, and the opt-in local guard. No .NET migration is planned.
 
 ## Current public-platform constraint
 
