@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.1.0 - 2026-07-28
+
+### RTK savings and health
+
+- Add an optional local RTK integration with telemetry forcibly disabled for every monitor query.
+- Add a dedicated RTK health tab with aggregate estimated tokens saved, reduction percentage, commands tracked, parser failures, and daily history.
+- Distinguish healthy, idle, no-data, ineffective, unavailable, degraded, and possible-bypass states without claiming byte-derived estimates are billed-token or cash savings.
+- Keep RTK command text, arguments, executable paths, and database paths out of monitor persistence and visible aggregate tables.
+
+### Kill-switch clarity
+
+- Make the default state explicit as `OFF - no process can be stopped`.
+- Add outcome-based advisory, armed, grace, locked, and renewed status text.
+- Add read-only exact-path/process-match verification, trigger/scope/grace summaries, and a more explicit enforced-mode confirmation.
+- Preserve opt-in behavior: no threshold or process enforcement is enabled automatically.
+
+### QA and packaging
+
+- Add deterministic RTK parsing, savings, telemetry-block, possible-bypass, and guard-readiness tests.
+- Include the RTK module in the zero-outbound release gate and packaged release.
+
 ## 3.0.0 - 2026-07-27
 
 ### Privacy and offline foundation

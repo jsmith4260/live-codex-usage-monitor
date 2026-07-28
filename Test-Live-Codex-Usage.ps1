@@ -14,6 +14,7 @@ $officialFixture = Join-Path $scriptDir 'tests\fixtures\official-usage-snapshot.
 $storeModule = Join-Path $scriptDir 'Live-Codex-Usage-Store.psm1'
 $guardModule = Join-Path $scriptDir 'Live-Codex-Usage-Guard.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
+$rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
 
 Write-Host 'Running Live Codex Usage QA...'
 
@@ -29,7 +30,7 @@ function Invoke-MonitorTest {
     $common = @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $monitor,
         '-CodexHome', $fixtureHome, '-HistoryHours', '87600',
-        '-NoNotifications', '-NoSound', '-DisablePersistence'
+        '-NoNotifications', '-NoSound', '-DisablePersistence', '-DisableRtkIntegration'
     )
     $previousErrorAction = $ErrorActionPreference
     try {
@@ -79,7 +80,7 @@ Invoke-MonitorTest -Name 'Compliance dialog construction' -Arguments @(
 ) -ExpectedPattern 'Compliance dialog constructed successfully; Tabs=4; Rows=3'
 Invoke-MonitorTest -Name 'Control center construction' -Arguments @(
     '-InsightsUiSmokeTest', '-OfficialSnapshotPath', $officialFixture
-) -ExpectedPattern 'Control center constructed successfully; Tabs=6; TrendRows=2; Models=2'
+) -ExpectedPattern 'Control center constructed successfully; Tabs=7; TrendRows=2; Models=2'
 
 Write-Host '  Offline rate-card estimates'
 Import-Module -Name $costModule -Force
@@ -172,6 +173,63 @@ if ($guardPolicy.Locked) { throw 'Usage guard did not unlock after exact affirma
 $renewed = Test-UsageGuardThreshold -Policy $guardPolicy -CurrentValue 10 -AsOf (Get-Date)
 if ($renewed.Crossed -or $renewed.Reason -notmatch 'renewed until') {
     throw 'Affirmative guard renewal did not suppress re-locking until the renewal boundary.'
+}
+$offReadiness = Get-UsageGuardReadiness -Policy (New-UsageGuardPolicy) -ProcessProvider { @() }
+if ($offReadiness.StatusCode -ne 'Off' -or $offReadiness.StatusLabel -notmatch 'no process can be stopped') {
+    throw 'Usage guard readiness did not make the disabled state explicit.'
+}
+$armedReadiness = Get-UsageGuardReadiness -Policy $guardPolicy -ProcessProvider {
+    @([pscustomobject]@{ Id = 303; ProcessName = 'codex'; Path = 'C:\Approved\codex.exe' })
+}
+if ($armedReadiness.StatusCode -ne 'Armed' -or -not $armedReadiness.ReadyForEnforcement -or
+    $armedReadiness.ApprovedPathCount -ne 1 -or $armedReadiness.RunningMatchCount -ne 1) {
+    throw 'Usage guard readiness did not report exact-path enforcement readiness.'
+}
+
+Write-Host '  RTK local savings parsing, telemetry block, and health detection'
+Import-Module -Name $rtkModule -Force
+$rtkGainPayload = [pscustomobject]@{
+    summary = [pscustomobject]@{
+        total_commands = 4; total_input = 1000; total_output = 600; total_saved = 400
+        avg_savings_pct = 40.0; total_time_ms = 20; avg_time_ms = 5
+    }
+    daily = @([pscustomobject]@{
+        date = (Get-Date).ToString('yyyy-MM-dd'); commands = 4; input_tokens = 1000
+        output_tokens = 600; saved_tokens = 400; savings_pct = 40.0; total_time_ms = 20; avg_time_ms = 5
+    })
+    weekly = @()
+    monthly = @()
+} | ConvertTo-Json -Depth 6
+$rtkRunner = {
+    param($Executable, $Arguments)
+    $command = $Arguments -join ' '
+    if ($command -eq '--version') {
+        return [pscustomobject]@{ ExitCode = 0; Stdout = 'rtk 0.44.0'; Stderr = ''; TimedOut = $false }
+    }
+    if ($command -eq 'gain --all --format json') {
+        return [pscustomobject]@{ ExitCode = 0; Stdout = $rtkGainPayload; Stderr = ''; TimedOut = $false }
+    }
+    return [pscustomobject]@{ ExitCode = 0; Stdout = 'No parse failures recorded.'; Stderr = ''; TimedOut = $false }
+}
+$rtkDb = Join-Path ([System.IO.Path]::GetTempPath()) ('rtk-health-{0}.db' -f [guid]::NewGuid().ToString('N'))
+try {
+    [void](New-Item -ItemType File -Path $rtkDb)
+    (Get-Item -LiteralPath $rtkDb).LastWriteTime = (Get-Date).AddMinutes(-1)
+    $rtkSnapshot = Get-RtkSavingsSnapshot -RtkPath $monitor -DatabasePath $rtkDb -CommandRunner $rtkRunner
+    if ($rtkSnapshot.HealthCode -ne 'Active' -or -not $rtkSnapshot.Working -or
+        $rtkSnapshot.SavedTokensEstimate -ne 400 -or $rtkSnapshot.SavingsPercent -ne 40 -or
+        -not $rtkSnapshot.TelemetryBlocked -or $rtkSnapshot.OutboundRequestMade) {
+        throw 'RTK local savings snapshot is incorrect or violates the zero-outbound contract.'
+    }
+    (Get-Item -LiteralPath $rtkDb).LastWriteTime = (Get-Date).AddMinutes(-10)
+    $bypassed = Get-RtkSavingsSnapshot -RtkPath $monitor -DatabasePath $rtkDb `
+        -RecentShellActivityAt (Get-Date) -CommandRunner $rtkRunner
+    if ($bypassed.HealthCode -ne 'PossibleBypass' -or $bypassed.Working) {
+        throw 'RTK did not identify activity newer than its local tracking history.'
+    }
+}
+finally {
+    Remove-Item -LiteralPath $rtkDb -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host '  Zero-outbound runtime gate'

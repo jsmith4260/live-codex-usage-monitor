@@ -206,13 +206,70 @@ function Get-ApprovedGuardProcesses {
             $approved[[System.IO.Path]::GetFullPath([string]$path).ToLowerInvariant()] = $true
         }
     }
-    $matches = [System.Collections.Generic.List[object]]::new()
+    $matchedProcesses = [System.Collections.Generic.List[object]]::new()
     foreach ($candidate in @(& $ProcessProvider)) {
         if ($null -eq $candidate -or [string]::IsNullOrWhiteSpace([string]$candidate.Path)) { continue }
         $fullPath = [System.IO.Path]::GetFullPath([string]$candidate.Path).ToLowerInvariant()
-        if ($approved.ContainsKey($fullPath)) { $matches.Add($candidate) }
+        if ($approved.ContainsKey($fullPath)) { $matchedProcesses.Add($candidate) }
     }
-    return @($matches)
+    return @($matchedProcesses)
+}
+
+function Get-UsageGuardReadiness {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Policy,
+        [scriptblock]$ProcessProvider
+    )
+
+    $approvedPathCount = @($Policy.ApprovedExecutablePaths | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_)
+    }).Count
+    $runningMatches = @(if ($approvedPathCount -gt 0) {
+        Get-ApprovedGuardProcesses -Policy $Policy -ProcessProvider $ProcessProvider
+    })
+    $statusCode = 'Off'
+    $statusLabel = 'OFF - no process can be stopped'
+    $message = 'The usage guard is disabled. No limit, warning, or process enforcement is active.'
+    $readyForEnforcement = $false
+
+    if ([bool]$Policy.Locked) {
+        $statusCode = 'Locked'
+        $statusLabel = 'LOCKED - Codex requires affirmative re-enable'
+        $message = [string]$Policy.LockReason
+        $readyForEnforcement = ([string]$Policy.Mode -eq 'Enforced' -and $approvedPathCount -gt 0)
+    }
+    elseif ([bool]$Policy.Enabled -and [string]$Policy.Mode -eq 'Enforced') {
+        $readyForEnforcement = ($approvedPathCount -gt 0)
+        if ($readyForEnforcement) {
+            $statusCode = 'Armed'
+            $statusLabel = 'ARMED (ENFORCED) - approved Codex executables may be stopped'
+            $message = '{0} exact path(s) approved; {1} matching process(es) running now.' -f $approvedPathCount, $runningMatches.Count
+        }
+        else {
+            $statusCode = 'NotReady'
+            $statusLabel = 'NOT READY - enforced mode has no approved path'
+            $message = 'Add at least one exact Codex executable path before enforced mode can be active.'
+        }
+    }
+    elseif ([bool]$Policy.Enabled) {
+        $statusCode = 'Advisory'
+        $statusLabel = 'ADVISORY - warnings only'
+        $message = 'Threshold warnings are active, but no process can be stopped.'
+    }
+
+    return [pscustomobject][ordered]@{
+        StatusCode = $statusCode
+        StatusLabel = $statusLabel
+        Message = $message
+        Enabled = [bool]$Policy.Enabled
+        Mode = [string]$Policy.Mode
+        Locked = [bool]$Policy.Locked
+        ReadyForEnforcement = $readyForEnforcement
+        ApprovedPathCount = $approvedPathCount
+        RunningMatchCount = $runningMatches.Count
+        RunningMatches = @($runningMatches)
+    }
 }
 
 function Invoke-UsageGuardEnforcement {
@@ -238,14 +295,14 @@ function Invoke-UsageGuardEnforcement {
             Stop-Process -Id ([int]$Candidate.Id) -Force -ErrorAction Stop
         }
     }
-    $matches = @(Get-ApprovedGuardProcesses -Policy $Policy -ProcessProvider $ProcessProvider)
+    $matchedProcesses = @(Get-ApprovedGuardProcesses -Policy $Policy -ProcessProvider $ProcessProvider)
     $stopped = 0
-    foreach ($candidate in $matches) {
+    foreach ($candidate in $matchedProcesses) {
         & $StopProvider $candidate
         $stopped++
     }
     return [pscustomobject]@{
-        Examined = $matches.Count
+        Examined = $matchedProcesses.Count
         Stopped = $stopped
         Mode = 'Enforced'
     }
@@ -259,5 +316,6 @@ Export-ModuleMember -Function @(
     'Lock-UsageGuardPolicy',
     'Unlock-UsageGuardPolicy',
     'Get-ApprovedGuardProcesses',
+    'Get-UsageGuardReadiness',
     'Invoke-UsageGuardEnforcement'
 )

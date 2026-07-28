@@ -74,7 +74,9 @@ param(
     [switch]$InsightsUiSmokeTest,
     [switch]$PerformanceSmokeTest,
     [switch]$CatalogExpansionSmokeTest,
-    [ValidateRange(0, 5)]
+    [string]$RtkExecutablePath = '',
+    [switch]$DisableRtkIntegration,
+    [ValidateRange(0, 6)]
     [int]$InsightsTabIndex = 0,
     [string]$CaptureScreenshotPath = ''
 )
@@ -88,9 +90,10 @@ if ([string]::IsNullOrWhiteSpace($scriptDir)) { $scriptDir = (Get-Location).Path
 $costModule = Join-Path $scriptDir 'Live-Codex-Usage-Cost.psm1'
 $guardModule = Join-Path $scriptDir 'Live-Codex-Usage-Guard.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
+$rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
 $reconciliationModule = Join-Path $scriptDir 'Live-Codex-Usage-Reconciliation.psm1'
 $storeModule = Join-Path $scriptDir 'Live-Codex-Usage-Store.psm1'
-foreach ($modulePath in @($costModule, $guardModule, $privacyModule, $reconciliationModule, $storeModule)) {
+foreach ($modulePath in @($costModule, $guardModule, $privacyModule, $rtkModule, $reconciliationModule, $storeModule)) {
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) { throw "Required module not found: $modulePath" }
     Import-Module -Name $modulePath -Force
 }
@@ -124,6 +127,15 @@ $script:costEstimate = $null
 $script:configuredSpend = $null
 $script:guardStatus = $null
 $script:lastGuardAlertReason = ''
+try {
+    $script:rtkSnapshot = Get-RtkSavingsSnapshot -RtkPath $RtkExecutablePath -Disabled:$DisableRtkIntegration
+}
+catch {
+    $script:rtkSnapshot = Get-RtkSavingsSnapshot -Disabled
+    $script:startupWarnings.Add("RTK diagnostics could not start: $($_.Exception.Message)")
+}
+$script:lastRtkCheck = Get-Date
+$script:lastRtkAlertCode = ''
 $sessionRoots = [System.Collections.Generic.List[string]]::new()
 foreach ($folderName in @('sessions', 'archived_sessions')) {
     if ($folderName -eq 'archived_sessions' -and -not $IncludeArchivedSessions) { continue }
@@ -1478,6 +1490,51 @@ function Update-DerivedUsageState {
     $script:lastCostKey = $CacheKey
 }
 
+function Update-RtkSavingsState {
+    [CmdletBinding()]
+    param([switch]$Force)
+
+    if ($DisableRtkIntegration) { return $script:rtkSnapshot }
+    $now = Get-Date
+    if (-not $Force -and (($now - $script:lastRtkCheck).TotalSeconds -lt 60)) {
+        return $script:rtkSnapshot
+    }
+    $recentShell = @($script:integrationEvents |
+        Where-Object { [string]$_.Name -eq 'Local shell' } |
+        Sort-Object At -Descending |
+        Select-Object -First 1)
+    $recentShellAt = if ($recentShell.Count -gt 0) { [datetime]$recentShell[0].At } else { [datetime]::MinValue }
+    try {
+        $script:rtkSnapshot = Get-RtkSavingsSnapshot `
+            -RtkPath $RtkExecutablePath `
+            -RecentShellActivityAt $recentShellAt `
+            -Now $now
+        $script:lastRtkCheck = $now
+        $problemCodes = @('NotInstalled','Unavailable','PossibleBypass','Degraded')
+        if ([string]$script:rtkSnapshot.HealthCode -in $problemCodes -and
+            [string]$script:rtkSnapshot.HealthCode -ne $script:lastRtkAlertCode) {
+            $script:lastRtkAlertCode = [string]$script:rtkSnapshot.HealthCode
+            if (-not $NoNotifications -and $null -ne $script:notifyIcon) {
+                $script:notifyIcon.BalloonTipTitle = 'RTK savings health'
+                $script:notifyIcon.BalloonTipText = [string]$script:rtkSnapshot.Message
+                $script:notifyIcon.ShowBalloonTip(5000)
+            }
+        }
+        elseif ([string]$script:rtkSnapshot.HealthCode -notin $problemCodes) {
+            $script:lastRtkAlertCode = ''
+        }
+    }
+    catch {
+        $script:lastRtkCheck = $now
+        if (-not $NoNotifications -and $null -ne $script:notifyIcon) {
+            $script:notifyIcon.BalloonTipTitle = 'RTK savings health'
+            $script:notifyIcon.BalloonTipText = 'RTK local diagnostics failed: ' + $_.Exception.Message
+            $script:notifyIcon.ShowBalloonTip(5000)
+        }
+    }
+    return $script:rtkSnapshot
+}
+
 function Save-PrivacySafeMonitorHistory {
     if ($DisablePersistence) { return }
     if (((Get-Date) - $script:lastStoreWrite).TotalSeconds -lt 60) { return }
@@ -2225,7 +2282,7 @@ $exportButton.AccessibleDescription = 'Write daily aggregate counts only. Prompt
 $enterpriseButton.AccessibleName = 'Import Workspace Analytics CSV'
 $enterpriseButton.AccessibleDescription = 'Open a local Enterprise or Edu Workspace Analytics CSV and show aggregate metrics.'
 $controlCenterButton.AccessibleName = 'Open insights and controls'
-$controlCenterButton.AccessibleDescription = 'Open offline trends, spending estimates, official-report reconciliation, provenance, and the opt-in usage guard.'
+$controlCenterButton.AccessibleDescription = 'Open offline trends, local RTK savings health, spending estimates, official-report reconciliation, provenance, and the opt-in usage guard.'
 $miniButton.AccessibleName = 'Toggle compact monitor mode'
 $miniButton.AccessibleDescription = 'Switch between the full dashboard and the always-on-top compact status view.'
 $viewAllButton.AccessibleName = 'Show all tasks'
@@ -2244,7 +2301,7 @@ $toolTip.SetToolTip($presetBox, 'Choose a quick range. Custom keeps the calendar
 $toolTip.SetToolTip($loadRangeButton, 'Load the complete selected date range (Ctrl+L).')
 $toolTip.SetToolTip($exportButton, 'Export daily aggregates only; no prompts, paths, task names, or identifiers (Ctrl+E).')
 $toolTip.SetToolTip($enterpriseButton, 'Open an aggregate Workspace Analytics CSV from ChatGPT Enterprise or Edu.')
-$toolTip.SetToolTip($controlCenterButton, 'Open offline insights, cost estimates, official reconciliation, and the opt-in usage guard.')
+$toolTip.SetToolTip($controlCenterButton, 'Open offline insights, RTK savings health, cost estimates, official reconciliation, and the opt-in usage guard.')
 $toolTip.SetToolTip($miniButton, 'Toggle the always-on-top compact view (Ctrl+M).')
 $toolTip.SetToolTip($clearButton, 'Discard the in-memory window and watch only newly appended log records.')
 
@@ -2460,6 +2517,11 @@ function Get-RenderStateKey {
         $script:guardPolicy.Threshold,
         $script:guardPolicy.Locked,
         $script:guardPolicy.OverrideUntil
+    $rtkKey = '{0}:{1}:{2}:{3}' -f `
+        $script:rtkSnapshot.HealthCode,
+        $script:rtkSnapshot.TotalCommands,
+        $script:rtkSnapshot.SavedTokensEstimate,
+        $script:rtkSnapshot.FailureCount
     return @(
         $script:usageRevision,
         $script:activityRevision,
@@ -2472,6 +2534,7 @@ function Get-RenderStateKey {
         (Get-Date).ToString('yyyyMMddHHmm'),
         $profileKey,
         $guardKey,
+        $rtkKey,
         $script:officialSnapshotSignature
     ) -join '|'
 }
@@ -2483,6 +2546,7 @@ function Refresh-Display {
     Update-Events
     Update-ResponsiveLayout
     Update-OfficialSnapshotFromWatchFolder
+    [void](Update-RtkSavingsState)
     $renderKey = Get-RenderStateKey
     if ($script:lastRenderKey -eq $renderKey) {
         $previousGuardLabel = if ($null -ne $script:guardStatus) { [string]$script:guardStatus.Label } else { '' }
@@ -2607,9 +2671,11 @@ function Refresh-Display {
     }
     else { '' }
     $warningText = if ($script:startupWarnings.Count -gt 0) { ' | warning: ' + $script:startupWarnings[0] } else { '' }
-    $noteLabel.Text = 'Offline/no paid calls | est {0:N2} credits{1} | {2} | {3} | {4} | guard {5}{6}' -f `
-        ([decimal]$script:costEstimate.EstimatedCredits), $unpricedText, $apiText, $cashText, $officialText, $script:guardStatus.Label, $warningText
-    if ([bool]$script:guardPolicy.Locked -or [int64]$script:costEstimate.UnpricedTokens -gt 0 -or $script:startupWarnings.Count -gt 0) {
+    $rtkText = 'RTK {0}, saved ~{1}' -f $script:rtkSnapshot.HealthLabel, (Format-Tokens ([int64]$script:rtkSnapshot.SavedTokensEstimate))
+    $noteLabel.Text = 'Offline/no paid calls | est {0:N2} credits{1} | {2} | {3} | {4} | {5} | guard {6}{7}' -f `
+        ([decimal]$script:costEstimate.EstimatedCredits), $unpricedText, $apiText, $cashText, $officialText, $rtkText, $script:guardStatus.Label, $warningText
+    if ([bool]$script:guardPolicy.Locked -or -not [bool]$script:rtkSnapshot.Working -or
+        [int64]$script:costEstimate.UnpricedTokens -gt 0 -or $script:startupWarnings.Count -gt 0) {
         $noteLabel.ForeColor = $uiWarning
     }
     else {
@@ -3064,7 +3130,7 @@ function Show-ComplianceAnalyticsDialog {
 function Show-ControlCenterDialog {
     param(
         [switch]$ConstructionOnly,
-        [ValidateRange(0, 5)]
+        [ValidateRange(0, 6)]
         [int]$InitialTabIndex = 0,
         [string]$ScreenshotPath = ''
     )
@@ -3072,6 +3138,7 @@ function Show-ControlCenterDialog {
     $allUsage = @(Get-DisplayEvents -Mode 'All sessions')
     Update-DerivedUsageState -VisibleEvents $allUsage
     $script:guardStatus = Invoke-UsageGuardCycle
+    [void](Update-RtkSavingsState -Force)
     $trendRows = @(Get-UsageTrendRows -UsageEvents $allUsage -DailyCosts $script:dailyCosts)
     if (-not $DisablePersistence) {
         try {
@@ -3118,7 +3185,7 @@ function Show-ControlCenterDialog {
     $dialog.Font = New-UiFont 9.5
     $dialog.KeyPreview = $true
     $dialog.AccessibleName = 'Usage insights and controls'
-    $dialog.AccessibleDescription = 'Offline usage trends, cost estimates, official-report reconciliation, provenance, and opt-in guard settings.'
+    $dialog.AccessibleDescription = 'Offline usage trends, local RTK savings health, cost estimates, official-report reconciliation, provenance, and opt-in guard settings.'
 
     function Add-ControlCenterLabel {
         param(
@@ -3196,7 +3263,8 @@ function Show-ControlCenterDialog {
         -Text 'Every calculation stays on this PC. No account polling, ChatGPT turn, API request, credit, or paid service is used.' `
         -X 20 -Y 56 -Width 1060 -Height 24 -Size 10 -Color $uiAccent
     $sourceHeading = Add-ControlCenterLabel -Parent $dialog `
-        -Text ('LOCAL LOGS | RATE SNAPSHOT {0} | OFFICIAL {1} | GUARD {2}' -f `
+        -Text ('LOCAL LOGS | RTK {0} | RATE SNAPSHOT {1} | OFFICIAL {2} | GUARD {3}' -f `
+            $script:rtkSnapshot.HealthLabel.ToUpperInvariant(), `
             $script:rateCard.EffectiveDate, `
             $(if ($null -ne $script:officialSnapshot) { 'IMPORTED' } else { 'NOT IMPORTED' }), `
             $script:guardStatus.Label.ToUpperInvariant()) `
@@ -3376,6 +3444,170 @@ function Show-ControlCenterDialog {
         }
     }
     $heatmapTab.Controls.Add($heatmapGrid)
+
+    # Local RTK command-output savings and health
+    $rtkTab = New-ControlCenterTab 'RTK health'
+    $rtkBanner = New-Object System.Windows.Forms.Panel
+    $rtkBanner.Location = New-Object System.Drawing.Point(14, 14)
+    $rtkBanner.Size = New-Object System.Drawing.Size(1008, 54)
+    $rtkBanner.Anchor = 'Top,Left,Right'
+    $rtkBanner.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $rtkBanner.BackColor = $uiWindow
+    $rtkBanner.AccessibleName = 'RTK health status'
+    $rtkTab.Controls.Add($rtkBanner)
+    $rtkStatusLabel = Add-ControlCenterLabel -Parent $rtkBanner -Text '' -X 14 -Y 8 -Width 420 -Height 24 `
+        -Size 11 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold)
+    $rtkStatusLabel.AccessibleDescription = 'Text status for local RTK tracking health. Color is only a secondary cue.'
+    $rtkFreshnessLabel = Add-ControlCenterLabel -Parent $rtkBanner -Text '' -X 438 -Y 8 -Width 552 -Height 22 `
+        -Size 9 -Color $uiTextSecondary
+    [void](Add-ControlCenterLabel -Parent $rtkBanner `
+        -Text 'Local CLI-output compression only; not Codex quota, billing, ChatGPT turns, or API usage.' `
+        -X 14 -Y 31 -Width 976 -Height 18 -Size 8.5 -Color $uiTextMuted)
+
+    function Add-RtkMetricCard {
+        param([string]$Title, [int]$X, [string]$AccessibleDescription)
+        $panel = New-Object System.Windows.Forms.Panel
+        $panel.Location = New-Object System.Drawing.Point($X, 80)
+        $panel.Size = New-Object System.Drawing.Size(238, 82)
+        $panel.BackColor = $uiWindow
+        $panel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+        $panel.AccessibleName = $Title
+        $panel.AccessibleDescription = $AccessibleDescription
+        $rtkTab.Controls.Add($panel)
+        [void](Add-ControlCenterLabel -Parent $panel -Text $Title.ToUpperInvariant() -X 12 -Y 10 -Width 210 -Height 18 `
+            -Size 8 -Color $uiTextMuted -Style ([System.Drawing.FontStyle]::Bold))
+        $valueLabel = Add-ControlCenterLabel -Parent $panel -Text '-' -X 12 -Y 30 -Width 210 -Height 28 `
+            -Size 15 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold)
+        [void](Add-ControlCenterLabel -Parent $panel -Text 'All locally tracked RTK history' -X 12 -Y 60 -Width 210 -Height 16 `
+            -Size 7.5 -Color $uiTextMuted)
+        return $valueLabel
+    }
+
+    $rtkSavedValue = Add-RtkMetricCard -Title 'Estimated tokens saved' -X 14 `
+        -AccessibleDescription 'Estimated shell-output tokens removed by RTK across all locally retained history.'
+    $rtkReductionValue = Add-RtkMetricCard -Title 'Output reduction' -X 264 `
+        -AccessibleDescription 'Percentage reduction calculated by RTK from local shell-output byte estimates.'
+    $rtkCommandsValue = Add-RtkMetricCard -Title 'Commands tracked' -X 514 `
+        -AccessibleDescription 'Number of commands recorded by the local RTK history database.'
+    $rtkFailuresValue = Add-RtkMetricCard -Title 'Fallbacks / errors' -X 764 `
+        -AccessibleDescription 'RTK parse failures that may have fallen back to unfiltered command output.'
+
+    $rtkGridHost = New-Object System.Windows.Forms.Panel
+    $rtkGridHost.Location = New-Object System.Drawing.Point(14, 178)
+    $rtkGridHost.Size = New-Object System.Drawing.Size(690, 330)
+    $rtkGridHost.Anchor = 'Top,Left'
+    $rtkTab.Controls.Add($rtkGridHost)
+    $rtkGrid = New-ControlCenterGrid -Parent $rtkGridHost `
+        -Columns @('Date','Input est','Emitted est','Saved est','Reduction','Commands') `
+        -AccessibleName 'Daily local RTK savings history'
+    $rtkGrid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
+    $rtkWidths = @(105,112,112,112,105,90)
+    for ($columnIndex = 0; $columnIndex -lt $rtkWidths.Count; $columnIndex++) {
+        $rtkGrid.Columns[$columnIndex].Width = $rtkWidths[$columnIndex]
+    }
+    $rtkGrid.AccessibleDescription = 'Daily aggregate RTK shell-output estimates. No prompts, command text, arguments, or paths are shown.'
+
+    $rtkDiagnostics = New-Object System.Windows.Forms.TextBox
+    $rtkDiagnostics.Location = New-Object System.Drawing.Point(718, 178)
+    $rtkDiagnostics.Size = New-Object System.Drawing.Size(304, 330)
+    $rtkDiagnostics.Anchor = 'Top,Left,Right'
+    $rtkDiagnostics.Multiline = $true
+    $rtkDiagnostics.ReadOnly = $true
+    $rtkDiagnostics.WordWrap = $true
+    $rtkDiagnostics.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+    $rtkDiagnostics.BackColor = $uiWindow
+    $rtkDiagnostics.ForeColor = $uiTextSecondary
+    $rtkDiagnostics.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+    $rtkDiagnostics.Font = New-UiFont 9
+    $rtkDiagnostics.AccessibleName = 'Sanitized RTK health diagnostics'
+    $rtkTab.Controls.Add($rtkDiagnostics)
+
+    $refreshRtkButton = Add-ControlCenterButton -Parent $rtkTab -Text '&Refresh local metrics' -X 14 -Y 520 -Width 178
+    $refreshRtkButton.Anchor = 'Top,Left'
+    $rtkDisclaimer = Add-ControlCenterLabel -Parent $rtkTab `
+        -Text 'RTK estimates tokens from shell-output bytes. Do not combine these estimates with OpenAI credits, quota, billing, or cash totals.' `
+        -X 208 -Y 524 -Width 814 -Height 34 -Size 8.5 -Color $uiTextMuted
+    $rtkDisclaimer.Anchor = 'Top,Left,Right'
+
+    function Refresh-RtkTab {
+        $snapshot = $script:rtkSnapshot
+        $rtkStatusLabel.Text = 'RTK: ' + [string]$snapshot.HealthLabel
+        $rtkStatusLabel.ForeColor = switch ([string]$snapshot.HealthCode) {
+            { $_ -in @('Unavailable','PossibleBypass','Degraded') } { $uiCritical; break }
+            { $_ -in @('NotInstalled','Disabled','Ineffective','ReadyNoData') } { $uiWarning; break }
+            default { $uiSuccess }
+        }
+        $lastMetric = if ($null -eq $snapshot.LastTrackedAt) { 'No local metric recorded' } else {
+            'Last local metric {0} ({1:N0} min old)' -f ([datetime]$snapshot.LastTrackedAt).ToString('g'), [double]$snapshot.DataAgeMinutes
+        }
+        $rtkFreshnessLabel.Text = '{0} | v{1}' -f $lastMetric, $(if ($snapshot.Version) { $snapshot.Version } else { 'unknown' })
+        $rtkSavedValue.Text = '~' + (Format-Tokens ([int64]$snapshot.SavedTokensEstimate))
+        $rtkReductionValue.Text = '{0:N1}%' -f [double]$snapshot.SavingsPercent
+        $rtkCommandsValue.Text = '{0:N0}' -f [int64]$snapshot.TotalCommands
+        $rtkFailuresValue.Text = '{0:N0}' -f [int]$snapshot.FailureCount
+        $rtkFailuresValue.ForeColor = if ([int]$snapshot.FailureCount -gt 0) { $uiCritical } else { $uiText }
+
+        $rtkGrid.Rows.Clear()
+        foreach ($row in @($snapshot.Daily | Sort-Object Date -Descending)) {
+            [void]$rtkGrid.Rows.Add(
+                $row.Date,
+                (Format-Tokens ([int64]$row.InputTokensEstimate)),
+                (Format-Tokens ([int64]$row.OutputTokensEstimate)),
+                (Format-Tokens ([int64]$row.SavedTokensEstimate)),
+                ('{0:N1}%' -f [double]$row.SavingsPercent),
+                ('{0:N0}' -f [int64]$row.Commands)
+            )
+        }
+        $shortHealthDetail = switch ([string]$snapshot.HealthCode) {
+            'Active' { 'Tracking works and local history is current.' }
+            'Idle' { 'Tracking works; no recent update was expected.' }
+            'Ineffective' { 'Tracking works; no output reduction yet.' }
+            'PossibleBypass' { 'Recent shell activity is newer than RTK.' }
+            'Degraded' { 'Parser fallback or failure was recorded.' }
+            'NotInstalled' { 'No local RTK executable was detected.' }
+            'Unavailable' { 'RTK local metrics could not be read.' }
+            'ReadyNoData' { 'RTK is ready; no command is tracked yet.' }
+            default { [string]$snapshot.Message }
+        }
+        $diagnosticLines = @(
+            'HEALTH AND COVERAGE'
+            ''
+            ('Status: ' + [string]$snapshot.HealthLabel)
+            ('Detail: ' + $shortHealthDetail)
+            ('Version: ' + $(if ($snapshot.Version) { [string]$snapshot.Version } else { 'not detected' }))
+            ('History database: ' + $(if ($snapshot.DatabasePath -and (Test-Path -LiteralPath $snapshot.DatabasePath -PathType Leaf)) { 'local file available' } else { 'not found' }))
+            ('Parse failures: {0:N0}' -f [int]$snapshot.FailureCount)
+            ('Telemetry: blocked')
+            ('Network requests by monitor: none')
+            ''
+            'WHAT FAILURE STATES MEAN'
+            'Possible bypass: activity newer than history.'
+            'Degraded: parser fallback/failure recorded.'
+            'No savings: emitted output was unchanged.'
+            ''
+            'Token values are RTK byte estimates.'
+            'They are not billed tokens or cash savings.'
+        )
+        $rtkDiagnostics.Lines = [string[]]$diagnosticLines
+        try {
+            $rtkStatusLabel.AccessibilityNotifyClients([System.Windows.Forms.AccessibleEvents]::NameChange, -1)
+        }
+        catch { }
+    }
+    $refreshRtkButton.Add_Click({
+        try {
+            $refreshRtkButton.Enabled = $false
+            [void](Update-RtkSavingsState -Force)
+            Refresh-RtkTab
+            $sourceHeading.Text = 'LOCAL LOGS | RTK {0} | RATE SNAPSHOT {1} | OFFICIAL {2} | GUARD {3}' -f `
+                $script:rtkSnapshot.HealthLabel.ToUpperInvariant(), `
+                $script:rateCard.EffectiveDate, `
+                $(if ($null -ne $script:officialSnapshot) { 'IMPORTED' } else { 'NOT IMPORTED' }), `
+                $script:guardStatus.Label.ToUpperInvariant()
+        }
+        finally { $refreshRtkButton.Enabled = $true }
+    })
+    Refresh-RtkTab
 
     # Cost estimates and local contract parameters
     $costTab = New-ControlCenterTab 'Cost'
@@ -3586,19 +3818,22 @@ function Show-ControlCenterDialog {
     })
     Refresh-ReconciliationGrid
 
-    # Opt-in usage guard
+    # Opt-in usage guard and local Codex kill switch
+    $guardReadiness = Get-UsageGuardReadiness -Policy $script:guardPolicy
     $guardTab = New-ControlCenterTab 'Usage guard'
     $guardHeading = Add-ControlCenterLabel -Parent $guardTab `
-        -Text 'Opt-in local Codex usage guard' -X 14 -Y 14 -Width 1008 -Height 28 `
+        -Text 'Usage limit and local Codex kill switch' -X 14 -Y 14 -Width 1008 -Height 28 `
         -Size 11 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold)
     $guardWarning = Add-ControlCenterLabel -Parent $guardTab `
         -Text 'Advisory mode warns only. Enforced mode can terminate an active Codex process after the grace period and may interrupt work. It never blocks ChatGPT web or Office add-ins.' `
         -X 14 -Y 46 -Width 1008 -Height 42 -Size 9 -Color $uiWarning
     $guardStateLabel = Add-ControlCenterLabel -Parent $guardTab `
-        -Text ('Current state: {0} | {1}' -f $script:guardStatus.Label, $script:guardStatus.Reason) `
+        -Text ([string]$guardReadiness.StatusLabel) `
         -X 14 -Y 94 -Width 1008 -Height 30 -Size 10 `
-        -Color $(if ($script:guardPolicy.Locked) { $uiCritical } else { $uiTextSecondary }) `
+        -Color $(if ($script:guardPolicy.Locked) { $uiCritical } elseif ($script:guardPolicy.Enabled) { $uiSuccess } else { $uiTextSecondary }) `
         -Style ([System.Drawing.FontStyle]::Bold)
+    $guardStateLabel.AccessibleName = 'Usage guard and kill switch status'
+    $guardStateLabel.AccessibleDescription = 'Explicitly states whether process stopping is off, advisory only, armed, in grace, renewed, or locked.'
 
     $guardSettings = New-Object System.Windows.Forms.Panel
     $guardSettings.Location = New-Object System.Drawing.Point(14, 134)
@@ -3609,9 +3844,9 @@ function Show-ControlCenterDialog {
     $guardTab.Controls.Add($guardSettings)
 
     $guardEnabled = New-Object System.Windows.Forms.CheckBox
-    $guardEnabled.Text = '&Enable guard'
+    $guardEnabled.Text = '&Enable usage limit / kill switch'
     $guardEnabled.Location = New-Object System.Drawing.Point(18, 18)
-    $guardEnabled.Size = New-Object System.Drawing.Size(180, 26)
+    $guardEnabled.Size = New-Object System.Drawing.Size(300, 26)
     $guardEnabled.Checked = [bool]$script:guardPolicy.Enabled
     $guardEnabled.ForeColor = $uiText
     $guardEnabled.AccessibleDescription = 'The usage guard is off by default and does nothing until explicitly enabled.'
@@ -3622,8 +3857,8 @@ function Show-ControlCenterDialog {
     $guardMode.Location = New-Object System.Drawing.Point(210, 55)
     $guardMode.Size = New-Object System.Drawing.Size(210, 26)
     $guardMode.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-    [void]$guardMode.Items.AddRange(@('Advisory','Enforced'))
-    $guardMode.SelectedItem = [string]$script:guardPolicy.Mode
+    [void]$guardMode.Items.AddRange(@('Advisory (warn only)','Enforced (can stop Codex)'))
+    $guardMode.SelectedIndex = if ([string]$script:guardPolicy.Mode -eq 'Enforced') { 1 } else { 0 }
     $guardMode.BackColor = $uiSurfaceRaised
     $guardMode.ForeColor = $uiText
     $guardSettings.Controls.Add($guardMode)
@@ -3674,14 +3909,51 @@ function Show-ControlCenterDialog {
     $guardPaths.AccessibleDescription = 'One exact executable path per line. Enforced mode stops only an exact full-path match.'
     $guardSettings.Controls.Add($guardPaths)
     $browseGuardPath = Add-ControlCenterButton -Parent $guardSettings -Text '&Browse executable' -X 458 -Y 128 -Width 168
+    $verifyGuardPath = Add-ControlCenterButton -Parent $guardSettings -Text '&Verify path matches' -X 638 -Y 128 -Width 176
     $saveGuard = Add-ControlCenterButton -Parent $guardSettings -Text '&Save guard settings' -X 18 -Y 226 -Width 190
-    $renewGuard = Add-ControlCenterButton -Parent $guardSettings -Text '&Renew until midnight' -X 220 -Y 226 -Width 200
+    $renewGuard = Add-ControlCenterButton -Parent $guardSettings -Text '&Re-enable Codex until midnight' -X 220 -Y 226 -Width 226
     $renewGuard.Enabled = [bool]$script:guardPolicy.Locked
+    $guardReadinessLabel = Add-ControlCenterLabel -Parent $guardSettings -Text '' `
+        -X 458 -Y 260 -Width 520 -Height 50 -Size 8.5 -Color $uiTextSecondary
+    $guardReadinessLabel.AutoEllipsis = $false
+    $guardReadinessLabel.AccessibleName = 'Usage guard readiness summary'
     $guardFootnote = Add-ControlCenterLabel -Parent $guardSettings `
         -Text ("Daily metrics reset with the local date. ActualUsd uses the configured billing-cycle estimate." +
-            [Environment]::NewLine + 'Enforcement works only while this monitor is running.') `
+            [Environment]::NewLine + 'Enforcement works only while this monitor is running and only for exact approved paths.') `
         -X 458 -Y 174 -Width 520 -Height 78 -Size 9 -Color $uiTextMuted
     $guardFootnote.AutoEllipsis = $false
+
+    function Refresh-GuardReadinessDisplay {
+        $guardReadiness = Get-UsageGuardReadiness -Policy $script:guardPolicy
+        if ([bool]$script:guardPolicy.Locked) {
+            $guardStateLabel.Text = 'LOCKED - Codex requires affirmative re-enable'
+            $guardStateLabel.ForeColor = $uiCritical
+        }
+        elseif ([string]$script:guardStatus.Label -like 'Warning*') {
+            $guardStateLabel.Text = 'GRACE - threshold exceeded; ' + [string]$script:guardStatus.Label
+            $guardStateLabel.ForeColor = $uiWarning
+        }
+        elseif ([string]$script:guardStatus.Label -eq 'Renewed') {
+            $guardStateLabel.Text = 'RENEWED - enforcement paused until local midnight'
+            $guardStateLabel.ForeColor = $uiSuccess
+        }
+        else {
+            $guardStateLabel.Text = [string]$guardReadiness.StatusLabel
+            $guardStateLabel.ForeColor = switch ([string]$guardReadiness.StatusCode) {
+                'Armed' { $uiSuccess }
+                'Advisory' { $uiWarning }
+                'NotReady' { $uiCritical }
+                default { $uiTextSecondary }
+            }
+        }
+        $guardReadinessLabel.Text = 'Trigger: {0:N4} / {1:N4} {2} | Scope: {3} exact path(s) | Running matches: {4} | Grace: {5}s' -f `
+            [decimal]$script:guardStatus.Value, [decimal]$script:guardPolicy.Threshold, [string]$script:guardPolicy.Metric, `
+            [int]$guardReadiness.ApprovedPathCount, [int]$guardReadiness.RunningMatchCount, [int]$script:guardPolicy.GraceSeconds
+        try {
+            $guardStateLabel.AccessibilityNotifyClients([System.Windows.Forms.AccessibleEvents]::NameChange, -1)
+        }
+        catch { }
+    }
 
     $browseGuardPath.Add_Click({
         $fileDialog = New-Object System.Windows.Forms.OpenFileDialog
@@ -3696,15 +3968,31 @@ function Show-ControlCenterDialog {
         }
         finally { $fileDialog.Dispose() }
     })
+    $verifyGuardPath.Add_Click({
+        try {
+            $approvedPaths = @($guardPaths.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            $temporaryPolicy = New-UsageGuardPolicy -ApprovedExecutablePaths $approvedPaths
+            $readiness = Get-UsageGuardReadiness -Policy $temporaryPolicy
+            $guardReadinessLabel.Text = 'Verification only - {0} exact path(s); {1} matching process(es) running. Nothing was stopped.' -f `
+                $readiness.ApprovedPathCount, $readiness.RunningMatchCount
+            $guardReadinessLabel.ForeColor = if ($readiness.RunningMatchCount -gt 0) { $uiSuccess } else { $uiWarning }
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to verify executable paths') | Out-Null
+        }
+    })
     $saveGuard.Add_Click({
         try {
             if ([bool]$script:guardPolicy.Locked -and -not $guardEnabled.Checked) {
                 throw 'Use Renew until midnight before disabling a locked guard.'
             }
             $approvedPaths = @($guardPaths.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-            if ([string]$guardMode.SelectedItem -eq 'Enforced' -and $guardEnabled.Checked) {
+            $selectedMode = if ($guardMode.SelectedIndex -eq 1) { 'Enforced' } else { 'Advisory' }
+            if ($selectedMode -eq 'Enforced' -and $guardEnabled.Checked) {
                 $answer = [System.Windows.Forms.MessageBox]::Show(
-                    'Enforced mode can terminate an active Codex process after the grace period. Continue with these exact executable paths?',
+                    ('Enable enforced mode with metric {0}, threshold {1:N4}, grace {2}s, and {3} exact path(s)? ' +
+                        'It can terminate a matching active Codex process.') -f `
+                        [string]$guardMetric.SelectedItem, [decimal]$guardThreshold.Value, [int]$guardGrace.Value, $approvedPaths.Count,
                     'Confirm enforced usage guard',
                     [System.Windows.Forms.MessageBoxButtons]::YesNo,
                     [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -3713,7 +4001,7 @@ function Show-ControlCenterDialog {
             }
             $newPolicy = New-UsageGuardPolicy `
                 -Enabled ([bool]$guardEnabled.Checked) `
-                -Mode ([string]$guardMode.SelectedItem) `
+                -Mode $selectedMode `
                 -Metric ([string]$guardMetric.SelectedItem) `
                 -Threshold ([decimal]$guardThreshold.Value) `
                 -GraceSeconds ([int]$guardGrace.Value) `
@@ -3727,9 +4015,8 @@ function Show-ControlCenterDialog {
             $script:guardPolicy = $newPolicy
             Save-UsageGuardState
             $script:guardStatus = Invoke-UsageGuardCycle
-            $guardStateLabel.Text = 'Current state: {0} | {1}' -f $script:guardStatus.Label, $script:guardStatus.Reason
-            $guardStateLabel.ForeColor = if ($script:guardPolicy.Locked) { $uiCritical } else { $uiSuccess }
             $renewGuard.Enabled = [bool]$script:guardPolicy.Locked
+            Refresh-GuardReadinessDisplay
         }
         catch {
             [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to save usage guard') | Out-Null
@@ -3747,14 +4034,14 @@ function Show-ControlCenterDialog {
             Unlock-UsageGuardPolicy -Policy $script:guardPolicy -Confirmation 'REENABLE CODEX' | Out-Null
             Save-UsageGuardState
             $script:guardStatus = Invoke-UsageGuardCycle
-            $guardStateLabel.Text = 'Current state: renewed until local midnight.'
-            $guardStateLabel.ForeColor = $uiSuccess
             $renewGuard.Enabled = $false
+            Refresh-GuardReadinessDisplay
         }
         catch {
             [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to renew Codex usage') | Out-Null
         }
     })
+    Refresh-GuardReadinessDisplay
 
     # Model mix and provenance
     $provenanceTab = New-ControlCenterTab 'Sources'
@@ -3787,6 +4074,12 @@ function Show-ControlCenterDialog {
         $sourceGrid.Columns[$columnIndex].Width = $sourceWidths[$columnIndex]
     }
     [void]$sourceGrid.Rows.Add('Local Codex logs','Active',(Get-Date).ToString('g'),'Near-real-time local token and activity records; no outbound request.')
+    [void]$sourceGrid.Rows.Add(
+        'Local RTK savings',
+        [string]$script:rtkSnapshot.HealthLabel,
+        $(if ($null -ne $script:rtkSnapshot.LastTrackedAt) { ([datetime]$script:rtkSnapshot.LastTrackedAt).ToString('g') } else { '-' }),
+        'Aggregate CLI-output estimates and health from RTK local history; telemetry forced off.'
+    )
     [void]$sourceGrid.Rows.Add('Bundled rate card','Estimate',[string]$script:rateCard.EffectiveDate,'Static OpenAI credit rates; unknown models remain unpriced.')
     [void]$sourceGrid.Rows.Add('Aggregate history',$(if ($DisablePersistence) { 'Disabled' } else { 'Local only' }),$script:statePaths.AggregateStore,'Dates and counters only; no prompts, IDs, sessions, or paths inside the file.')
     if ($null -ne $script:officialSnapshot) {

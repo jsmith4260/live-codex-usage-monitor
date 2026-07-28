@@ -11,6 +11,7 @@ function Get-MonitorPrivacyContract {
         PaidServiceCalls = 'Forbidden'
         LocalInputs = @(
             'Existing Codex JSONL logs',
+            'Local RTK aggregate savings and health counters',
             'User-selected local official usage snapshots',
             'User-selected local Workspace Analytics exports',
             'User-selected local Compliance exports'
@@ -32,7 +33,7 @@ function New-UsageProvenance {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('Local Codex log', 'Imported official report', 'Imported Workspace Analytics', 'Imported Compliance export', 'Bundled rate card')]
+        [ValidateSet('Local Codex log', 'Local RTK savings', 'Imported official report', 'Imported Workspace Analytics', 'Imported Compliance export', 'Bundled rate card')]
         [string]$SourceKind,
         [Parameter(Mandatory = $true)]
         [datetime]$ObservedAt,
