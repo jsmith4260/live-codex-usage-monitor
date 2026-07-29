@@ -1,7 +1,7 @@
 # Live Codex Usage Monitor
 
 [![Windows tests](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml/badge.svg)](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml)
-![Version 3.4.3](https://img.shields.io/badge/version-3.4.3-00b7c3)
+![Version 3.4.4](https://img.shields.io/badge/version-3.4.4-00b7c3)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078d4)
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391fe)
 ![Local only](https://img.shields.io/badge/privacy-local--only-22c55e)

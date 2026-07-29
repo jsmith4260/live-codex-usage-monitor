@@ -17,6 +17,7 @@ Run:
 Optional QA (no window):
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -Once
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -UiSmokeTest
+  powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -UiLayoutSmokeTest
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -MiniSmokeTest
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -IntegrationSmokeTest
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -TaskSmokeTest
@@ -54,6 +55,7 @@ param(
     [string]$OfficialSnapshotPath = '',
     [switch]$Once,
     [switch]$UiSmokeTest,
+    [switch]$UiLayoutSmokeTest,
     [switch]$MiniSmokeTest,
     [switch]$IntegrationSmokeTest,
     [switch]$TaskSmokeTest,
@@ -111,7 +113,7 @@ $script:startupWarnings = [System.Collections.Generic.List[string]]::new()
 $script:instanceCoordinator = $null
 $script:instanceStatusCode = 'Unavailable'
 $automatedMode = @(
-    $Once, $UiSmokeTest, $MiniSmokeTest, $IntegrationSmokeTest, $TaskSmokeTest,
+    $Once, $UiSmokeTest, $UiLayoutSmokeTest, $MiniSmokeTest, $IntegrationSmokeTest, $TaskSmokeTest,
     $DateRangeSmokeTest, $StatusSmokeTest, $AlertSmokeTest, $ArchivedSmokeTest,
     $PresetSmokeTest, $RangeCacheSmokeTest, $QuotaResetSmokeTest, $ExportSmokeTest,
     $EnterpriseSmokeTest, $EnterpriseUiSmokeTest, $ComplianceUiSmokeTest,
@@ -1768,7 +1770,7 @@ function Invoke-UsageGuardCycle {
 # the form's Shown event so a large local log set cannot delay creation of the
 # window and make startup appear unresponsive.
 $requiresPreloadedEvents = (
-    $Once -or $UiSmokeTest -or $MiniSmokeTest -or $IntegrationSmokeTest -or
+    $Once -or $UiSmokeTest -or $UiLayoutSmokeTest -or $MiniSmokeTest -or $IntegrationSmokeTest -or
     $TaskSmokeTest -or $DateRangeSmokeTest -or $StatusSmokeTest -or
     $AlertSmokeTest -or $ArchivedSmokeTest -or $PresetSmokeTest -or
     $RangeCacheSmokeTest -or $QuotaResetSmokeTest -or $ExportSmokeTest -or
@@ -2389,6 +2391,15 @@ $explainBox.AccessibleName = 'Selected item explanation'
 $explainBox.AccessibleDescription = 'Plain-language explanation of the selected usage event, task, or integration.'
 $form.Controls.Add($explainBox)
 
+# WinForms places the first controls added at the front of the native z-order.
+# These three panels are visual backgrounds, not parents, so they must remain
+# behind every label, meter, picker, and button drawn over them. DrawToBitmap
+# does not reliably expose this ordering error, which is why the former visual
+# smoke capture could look correct while a real Windows desktop looked blank.
+foreach ($surface in @($heroCard, $summaryCard, $commandCard)) {
+    $surface.SendToBack()
+}
+
 $script:visibleEvents = @()
 $script:visibleActivity = @()
 $script:visibleIntegrations = @()
@@ -2496,7 +2507,11 @@ function Update-ResponsiveLayout {
     $margin = 18
     $gap = 16
     $clientW = [Math]::Max(1000, $form.ClientSize.Width)
-    $clientH = [Math]::Max(860, $form.ClientSize.Height)
+    # A 900px virtual canvas keeps the dashboard sections separated on common
+    # 1280x720 and 1366x768 work laptops. AutoScroll exposes the lower sections
+    # without allowing the 160px token grid to overlap their headings.
+    $clientH = [Math]::Max(900, $form.ClientSize.Height)
+    $form.AutoScrollMinSize = New-Object System.Drawing.Size(1000, 900)
     $contentW = $clientW - ($margin * 2)
     $rightW = [Math]::Max(360, [Math]::Min(620, [int]($contentW * 0.38)))
     $leftW = [Math]::Max(500, $contentW - $gap - $rightW)
@@ -2569,6 +2584,12 @@ function Update-ResponsiveLayout {
 
     $explainBox.Location = New-Object System.Drawing.Point($margin, $explainY)
     $explainBox.Size = New-Object System.Drawing.Size($contentW, $explainH)
+
+    # Resizing and mini/full transitions must not promote a background surface
+    # over its foreground controls.
+    foreach ($surface in @($heroCard, $summaryCard, $commandCard)) {
+        $surface.SendToBack()
+    }
 }
 
 function Set-MiniMode {
@@ -5390,13 +5411,40 @@ $form.Add_FormClosed({
     if ($null -ne $script:trayMenu) { $script:trayMenu.Dispose() }
 })
 
-if ($UiSmokeTest -or $MiniSmokeTest) {
+if ($UiSmokeTest -or $UiLayoutSmokeTest -or $MiniSmokeTest) {
     Refresh-Display
     if ($StartMini -and -not $script:isMiniMode) {
         Set-MiniMode -Enabled $true
         Refresh-Display
     }
-    if ($MiniSmokeTest) {
+    if ($UiLayoutSmokeTest) {
+        $form.ClientSize = New-Object System.Drawing.Size(1280, 720)
+        Update-ResponsiveLayout
+        $surfacePairs = @(
+            @($heroCard, $title),
+            @($heroCard, $statusMeter),
+            @($summaryCard, $minuteLabel),
+            @($commandCard, $viewAllButton),
+            @($commandCard, $presetBox)
+        )
+        foreach ($pair in $surfacePairs) {
+            $surfaceIndex = $form.Controls.GetChildIndex($pair[0])
+            $foregroundIndex = $form.Controls.GetChildIndex($pair[1])
+            if ($surfaceIndex -le $foregroundIndex) {
+                throw "Dashboard surface '$($pair[0].AccessibleName)' covers a foreground control."
+            }
+        }
+        if (($integrationLabel.Top - $grid.Bottom) -lt 10 -or
+            ($activityLabel.Top - $taskGrid.Bottom) -lt 10 -or
+            ($integrationGrid.Top - $integrationLabel.Bottom) -lt 4 -or
+            ($activityGrid.Top - $activityLabel.Bottom) -lt 4 -or
+            ($explainBox.Top - $integrationGrid.Bottom) -lt 10 -or
+            $form.AutoScrollMinSize.Height -lt ($explainBox.Bottom + 20)) {
+            throw 'Dashboard sections overlap or are outside the short-screen scroll canvas.'
+        }
+        Write-Output 'Layout=1280x720; CardsBehind=True; SectionsSeparated=True; VirtualHeight=900'
+    }
+    elseif ($MiniSmokeTest) {
         Set-MiniMode -Enabled $true
         Refresh-Display
         Set-MiniMode -Enabled $false
@@ -5414,10 +5462,20 @@ if ($UiSmokeTest -or $MiniSmokeTest) {
         [System.Windows.Forms.Application]::DoEvents()
         $bitmap = New-Object System.Drawing.Bitmap($form.ClientSize.Width, $form.ClientSize.Height)
         try {
+            # DrawToBitmap paints overlapping sibling controls in the opposite
+            # order from the native desktop. Temporarily invert only the three
+            # background surfaces so the QA artifact matches the real window;
+            # the z-order regression test above validates the native ordering.
+            foreach ($surface in @($heroCard, $summaryCard, $commandCard)) {
+                $surface.BringToFront()
+            }
             $form.DrawToBitmap($bitmap, (New-Object System.Drawing.Rectangle(0, 0, $bitmap.Width, $bitmap.Height)))
             $bitmap.Save($CaptureScreenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
         }
         finally {
+            foreach ($surface in @($heroCard, $summaryCard, $commandCard)) {
+                $surface.SendToBack()
+            }
             $bitmap.Dispose()
             $form.Hide()
         }

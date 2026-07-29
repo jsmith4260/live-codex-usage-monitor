@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.4.4 - 2026-07-29
+
+### Dashboard rendering
+
+- Keep the three dashboard surface panels behind their labels, meters, date
+  controls, and buttons in the native WinForms z-order, fixing blank header
+  cards on a real Windows desktop.
+- Use a separated 900-pixel virtual canvas with vertical scrolling on common
+  1280x720 and 1366x768 work laptops so lower headings cannot overlap the token
+  and task tables.
+- Add deterministic native z-order and short-screen geometry assertions instead
+  of relying only on `DrawToBitmap`, whose sibling-control ordering differs from
+  the displayed Windows window.
+- Preserve useful visual QA captures by compensating for the known
+  `DrawToBitmap` ordering difference only while a test screenshot is created.
+
 ## 3.4.3 - 2026-07-29
 
 ### Work-PC startup

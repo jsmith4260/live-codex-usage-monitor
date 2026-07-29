@@ -38,6 +38,19 @@ explanation instead of a console that immediately disappears. Starting a
 launcher again requests the existing window instead of creating a duplicate
 monitor. See [Work-PC installation](WORK-PC-INSTALLATION.md).
 
+## Laptop-height rendering
+
+The full dashboard uses a 900-pixel virtual canvas when the available client
+height is smaller. Standard 1280x720 and 1366x768 work laptops therefore keep
+the hero, context, controls, token/task tables, integration/activity tables, and
+explanation region separated, with native vertical scrolling for content below
+the fold.
+
+The three upper cards are background surfaces and are explicitly kept behind
+their foreground controls in the native WinForms z-order. Automated QA checks
+that relationship directly because `DrawToBitmap` does not reproduce sibling
+z-order the same way as the displayed Windows desktop.
+
 ## GitHub Releases
 
 Pushing a semantic tag that exactly matches `v` plus the checked-in `VERSION`
