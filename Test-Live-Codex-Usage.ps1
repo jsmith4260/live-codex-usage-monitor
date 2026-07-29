@@ -21,6 +21,9 @@ $instanceModule = Join-Path $scriptDir 'Live-Codex-Usage-Instance.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
 $personalModule = Join-Path $scriptDir 'Live-Codex-Usage-Personal.psm1'
 $rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
+$startHereLauncher = Join-Path $scriptDir 'START-HERE.cmd'
+$standardCmdLauncher = Join-Path $scriptDir 'Start-Live-Codex-Usage.cmd'
+$miniCmdLauncher = Join-Path $scriptDir 'Start-Live-Codex-Usage-Mini.cmd'
 
 Write-Host 'Running Live Codex Usage QA...'
 
@@ -89,6 +92,92 @@ Invoke-MonitorTest -Name 'Compliance dialog construction' -Arguments @(
 Invoke-MonitorTest -Name 'Control center construction' -Arguments @(
     '-InsightsUiSmokeTest', '-OfficialSnapshotPath', $officialFixture
 ) -ExpectedPattern 'Control center constructed successfully; Tabs=9; TrendRows=2; Models=2; Instance=INFO'
+
+Write-Host '  Work-PC launcher policy and download-marker handling'
+$launcherTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+    'live-codex-launcher-{0}' -f [guid]::NewGuid().ToString('N')
+)
+[void](New-Item -ItemType Directory -Path $launcherTestRoot)
+try {
+    $launcherCopy = Join-Path $launcherTestRoot 'START-HERE.cmd'
+    $dummyPowerShellLauncher = Join-Path $launcherTestRoot 'Start-Live-Codex-Usage.ps1'
+    Copy-Item -LiteralPath $startHereLauncher -Destination $launcherCopy
+    Set-Content -LiteralPath $dummyPowerShellLauncher -Value 'exit 0' -Encoding Ascii
+    Set-Content -LiteralPath $dummyPowerShellLauncher -Stream Zone.Identifier `
+        -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding Ascii
+
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        Push-Location -LiteralPath $launcherTestRoot
+        try {
+            $launcherOutput = @(& $env:ComSpec /d /c '"START-HERE.cmd" --check-only' 2>&1)
+            $launcherExit = $LASTEXITCODE
+        }
+        finally {
+            Pop-Location
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($launcherExit -ne 0 -or
+        ($launcherOutput -join [Environment]::NewLine) -notmatch 'Compatibility check passed') {
+        throw "START-HERE compatibility check failed.`n$($launcherOutput -join [Environment]::NewLine)"
+    }
+    if (@(Get-Item -LiteralPath $dummyPowerShellLauncher -Stream Zone.Identifier `
+            -ErrorAction SilentlyContinue).Count -ne 0) {
+        throw 'START-HERE did not remove the downloaded-file marker.'
+    }
+
+    Set-Content -LiteralPath $dummyPowerShellLauncher -Stream Zone.Identifier `
+        -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding Ascii
+    $env:LIVE_CODEX_TEST_MANAGED_POLICY = 'AllSigned'
+    try {
+        $previousErrorAction = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            Push-Location -LiteralPath $launcherTestRoot
+            try {
+                $managedOutput = @(& $env:ComSpec /d /c '"START-HERE.cmd" --check-only' 2>&1)
+                $managedExit = $LASTEXITCODE
+            }
+            finally {
+                Pop-Location
+            }
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+    }
+    finally {
+        Remove-Item Env:LIVE_CODEX_TEST_MANAGED_POLICY -ErrorAction SilentlyContinue
+    }
+    $managedText = $managedOutput -join [Environment]::NewLine
+    if ($managedExit -ne 40 -or $managedText -notmatch 'AllSigned' -or
+        $managedText -notmatch 'IT administrator') {
+        throw "START-HERE did not report managed AllSigned policy safely.`n$managedText"
+    }
+    if (@(Get-Item -LiteralPath $dummyPowerShellLauncher -Stream Zone.Identifier `
+            -ErrorAction SilentlyContinue).Count -ne 1) {
+        throw 'START-HERE changed a downloaded file before honoring managed AllSigned policy.'
+    }
+
+    $standardCmdText = Get-Content -LiteralPath $standardCmdLauncher -Raw
+    $miniCmdText = Get-Content -LiteralPath $miniCmdLauncher -Raw
+    if ($standardCmdText -notmatch 'START-HERE\.cmd' -or
+        $miniCmdText -notmatch 'START-HERE\.cmd.+--mini') {
+        throw 'One or more double-click launchers bypass START-HERE.'
+    }
+}
+finally {
+    Remove-Item Env:LIVE_CODEX_TEST_MANAGED_POLICY -ErrorAction SilentlyContinue
+    $resolvedLauncherRoot = [System.IO.Path]::GetFullPath($launcherTestRoot)
+    $resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    if ($resolvedLauncherRoot.StartsWith($resolvedTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $resolvedLauncherRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
 Write-Host '  Per-user single-instance activation and recovery'
 Import-Module -Name $instanceModule -Force

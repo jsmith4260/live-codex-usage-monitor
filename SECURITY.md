@@ -9,6 +9,10 @@ Live Codex Usage Monitor is designed to read local Codex session logs and person
 - The monitor does not require an OpenAI API key or network access.
 - Runtime account polling and outbound HTTP clients are forbidden. `Test-ZeroOutbound.ps1` enforces this in release QA.
 - Monitoring creates no ChatGPT turn, token, credit, API, agent, or other paid usage.
+- The Windows bootstrap never changes registry or PowerShell execution-policy
+  settings. It can remove the Internet Zone marker from PowerShell source files
+  in the extracted release folder after the user chooses to run it, but it
+  refuses administrator-enforced `AllSigned` or `Restricted` policy.
 - Explicit CSV outputs contain aggregates only and exclude task names, session IDs, source paths, direct user identifiers, prompts, responses, and tool content.
 - Repository rules exclude local JSONL session logs, generated telemetry, databases, and common secret-file formats.
 - Persistent history contains aggregate dates/counters only. Guard and cost settings contain local numeric parameters and exact executable paths, never credentials.
@@ -61,3 +65,11 @@ The product is a single-user tool. Personal usage summaries and activity exports
 Personal backups use an allowlist containing aggregate history, guard settings, cost settings, and personal settings. They exclude raw Codex logs and imported source reports. Every backed-up entry has a SHA-256 integrity value verified before restore, and interactive restore creates a pre-restore backup.
 
 Sanitized diagnostics contain check names, status words, and content-free descriptions only. They exclude usernames, full paths, source filenames, prompts, responses, IDs, and command text.
+
+## Release authenticity
+
+GitHub release ZIPs include a SHA-256 manifest for integrity verification. The
+project's scripts are not currently Authenticode-signed. A work computer that
+enforces `AllSigned` therefore requires IT approval or an internally signed
+package; the monitor does not bypass that control. See
+[Work-PC installation](docs/WORK-PC-INSTALLATION.md).

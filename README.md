@@ -1,7 +1,7 @@
 # Live Codex Usage Monitor
 
 [![Windows tests](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml/badge.svg)](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml)
-![Version 3.4.2](https://img.shields.io/badge/version-3.4.2-00b7c3)
+![Version 3.4.3](https://img.shields.io/badge/version-3.4.3-00b7c3)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078d4)
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391fe)
 ![Local only](https://img.shields.io/badge/privacy-local--only-22c55e)
@@ -38,7 +38,7 @@ view of Codex usage while keeping personal activity on the same computer.
 ## Quick start
 
 1. [Download the latest Windows ZIP](https://github.com/jsmith4260/live-codex-usage-monitor/releases/latest/download/live-codex-usage-monitor-windows.zip) and extract it.
-2. Double-click `Start-Live-Codex-Usage.cmd`.
+2. Double-click `START-HERE.cmd`.
 3. Use **Control center** to open Trends, Saver, RTK health, Cost, Compare, Usage guard, Sources, and Settings.
 
 There is no installer, account sign-in, API key, or runtime package download.
@@ -51,8 +51,20 @@ To install with Git instead:
 ```powershell
 git clone https://github.com/jsmith4260/live-codex-usage-monitor.git
 Set-Location .\live-codex-usage-monitor
-& .\Start-Live-Codex-Usage.ps1
+.\START-HERE.cmd
 ```
+
+### Work PCs and script signing
+
+`START-HERE.cmd` prevents a downloaded ZIP's Windows Internet marker from
+causing a silent startup failure. It unblocks only PowerShell source files
+inside the extracted monitor folder and does not change execution policy,
+registry settings, or administrator controls.
+
+If your organization enforces `AllSigned` or `Restricted`, it stops and shows
+an IT-facing explanation instead of trying to bypass the policy. Releases are
+SHA-256 checksummed but are not currently Authenticode-signed. See the
+[work-PC installation guide](docs/WORK-PC-INSTALLATION.md).
 
 ## Purpose
 
@@ -81,6 +93,7 @@ Use this monitor to understand the shape of local Codex work without creating mo
 
 ## Launch options
 
+- Recommended first launch after downloading: `START-HERE.cmd`
 - Full dashboard by double-click: `Start-Live-Codex-Usage.cmd`
 - Mini always-visible view by double-click: `Start-Live-Codex-Usage-Mini.cmd`
 - Full dashboard from PowerShell:

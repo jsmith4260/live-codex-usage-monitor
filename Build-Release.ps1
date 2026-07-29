@@ -98,6 +98,7 @@ $releaseItems = @(
     'Live-Codex-Usage-Reconciliation.psm1',
     'Live-Codex-Usage-Store.psm1',
     'Convert-Enterprise-ComplianceExport.ps1',
+    'START-HERE.cmd',
     'Start-Live-Codex-Usage.ps1',
     'Start-Live-Codex-Usage.cmd',
     'Start-Live-Codex-Usage-Mini.ps1',

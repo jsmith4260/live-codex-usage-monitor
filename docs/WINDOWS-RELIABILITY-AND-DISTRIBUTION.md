@@ -26,10 +26,17 @@ fall back to an online service.
 
 ## Launchers
 
-The two `.cmd` launchers start Windows PowerShell in STA mode with its console
-window hidden. The dashboard or mini view remains the visible application
-surface. Starting the launcher again requests the existing window instead of
-creating a duplicate monitor.
+`START-HERE.cmd` is the recommended first entry point for a downloaded release.
+It detects managed PowerShell signing restrictions, removes the Internet Zone
+marker only from PowerShell files inside the extracted release folder when
+policy permits, and then starts Windows PowerShell in STA mode with its console
+window hidden. It never changes an execution-policy setting.
+
+The full and mini `.cmd` launchers route through `START-HERE.cmd`. If managed
+policy blocks the app or startup otherwise fails, the user receives a visible
+explanation instead of a console that immediately disappears. Starting a
+launcher again requests the existing window instead of creating a duplicate
+monitor. See [Work-PC installation](WORK-PC-INSTALLATION.md).
 
 ## GitHub Releases
 

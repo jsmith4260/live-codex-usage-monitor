@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.4.3 - 2026-07-29
+
+### Work-PC startup
+
+- Add a prominent `START-HERE.cmd` entry point that removes the Windows
+  downloaded-file marker only from PowerShell files inside the extracted
+  release folder.
+- Detect administrator-enforced `AllSigned` and `Restricted` policies before
+  launch, leave those policies unchanged, and provide a visible IT-facing
+  explanation instead of silently closing.
+- Route both double-click launchers through the new compatibility check and
+  show a Windows error dialog if the hidden GUI process fails during startup.
+- Add deterministic QA for download-marker removal, managed-policy refusal,
+  and launcher routing.
+- Add dedicated work-PC installation and signing documentation.
+
 ## 3.4.2 - 2026-07-28
 
 ### Licensing
