@@ -1,5 +1,32 @@
 # Changelog
 
+## 3.4.5 - 2026-07-29
+
+### Presentation-quality interaction fixes
+
+- Stop small opaque labels from stretching over adjacent buttons, combo boxes,
+  and date pickers when a work-PC window is widened, eliminating the reported
+  black rectangles and blocked click targets.
+- Make **Start fresh** invalidate every render/cache revision, clear stale
+  focus/session state, establish end-of-file baselines, and provide immediate
+  visible confirmation that existing logs were not deleted.
+- Add a persistent **Refresh s** control that applies a 1-60 second local-log
+  polling interval immediately without making a network or ChatGPT request.
+- Preserve existing personal settings by migrating older schema-1 files to the
+  safe five-second refresh default.
+
+### QA expansion
+
+- Add a shown-window interaction test that clicks all ten main buttons and
+  verifies view changes, pinning, date loading, aggregate CSV export, import and
+  control-center dialog routing, mini/full toggling, and enabled-state recovery.
+- Verify **Start fresh** against an actual newly appended token event in a
+  temporary Codex log rather than checking only cleared in-memory counters.
+- Exercise compact-to-wide resizing and fail QA if VIEW, RANGE, From, To, or
+  Refresh labels overlap their neighboring interactive controls.
+- Make interactive error paths throw their underlying exceptions during QA
+  instead of hiding failures behind modal message boxes.
+
 ## 3.4.4 - 2026-07-29
 
 ### Dashboard rendering

@@ -51,6 +51,14 @@ their foreground controls in the native WinForms z-order. Automated QA checks
 that relationship directly because `DrawToBitmap` does not reproduce sibling
 z-order the same way as the displayed Windows desktop.
 
+Small fixed labels use fixed left anchoring. QA resizes the dashboard from a
+compact width to 1280 pixels and rejects any overlap between VIEW, RANGE, From,
+To, or Refresh labels and their adjacent interactive controls.
+
+Main-window interaction QA shows the real form and activates all ten buttons.
+It also changes the refresh interval and verifies that **Start fresh** detects a
+newly appended token event after establishing its end-of-file baseline.
+
 ## GitHub Releases
 
 Pushing a semantic tag that exactly matches `v` plus the checked-in `VERSION`

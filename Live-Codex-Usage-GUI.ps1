@@ -18,6 +18,7 @@ Optional QA (no window):
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -Once
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -UiSmokeTest
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -UiLayoutSmokeTest
+  powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -UiInteractionSmokeTest
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -MiniSmokeTest
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -IntegrationSmokeTest
   powershell -NoProfile -File .\Live-Codex-Usage-GUI.ps1 -TaskSmokeTest
@@ -56,6 +57,8 @@ param(
     [switch]$Once,
     [switch]$UiSmokeTest,
     [switch]$UiLayoutSmokeTest,
+    [switch]$UiInteractionSmokeTest,
+    [string]$InteractionAppendPath = '',
     [switch]$MiniSmokeTest,
     [switch]$IntegrationSmokeTest,
     [switch]$TaskSmokeTest,
@@ -113,7 +116,8 @@ $script:startupWarnings = [System.Collections.Generic.List[string]]::new()
 $script:instanceCoordinator = $null
 $script:instanceStatusCode = 'Unavailable'
 $automatedMode = @(
-    $Once, $UiSmokeTest, $UiLayoutSmokeTest, $MiniSmokeTest, $IntegrationSmokeTest, $TaskSmokeTest,
+    $Once, $UiSmokeTest, $UiLayoutSmokeTest, $UiInteractionSmokeTest, $MiniSmokeTest,
+    $IntegrationSmokeTest, $TaskSmokeTest,
     $DateRangeSmokeTest, $StatusSmokeTest, $AlertSmokeTest, $ArchivedSmokeTest,
     $PresetSmokeTest, $RangeCacheSmokeTest, $QuotaResetSmokeTest, $ExportSmokeTest,
     $EnterpriseSmokeTest, $EnterpriseUiSmokeTest, $ComplianceUiSmokeTest,
@@ -160,6 +164,9 @@ catch {
     $script:personalSettings = New-PersonalMonitorSettings
     $script:startupWarnings.Add("Personal settings were reset: $($_.Exception.Message)")
 }
+if (-not $PSBoundParameters.ContainsKey('PollSeconds')) {
+    $PollSeconds = [int]$script:personalSettings.RefreshSeconds
+}
 try { $script:startupRegistration = Test-PersonalStartupRegistration -LauncherPath $script:launcherPath }
 catch {
     $script:startupRegistration = [pscustomobject]@{
@@ -185,6 +192,7 @@ $script:costEstimate = $null
 $script:configuredSpend = $null
 $script:guardStatus = $null
 $script:lastGuardAlertReason = ''
+$script:refreshTimer = $null
 try {
     $script:rtkSnapshot = Get-RtkSavingsSnapshot -RtkPath $RtkExecutablePath -Disabled:$DisableRtkIntegration
 }
@@ -918,6 +926,19 @@ function Reset-MonitorWindow {
     }
     $script:scanStats.AvailableFiles = $files.Count
     $script:scanStats.LoadedFiles = 0
+    $script:sessionInfo = @{}
+    $script:latestSource = $null
+    $script:latestSession = $null
+    $script:focusedSession = $null
+    $script:focusedEventId = $null
+    $script:visibleEvents = @()
+    $script:visibleActivity = @()
+    $script:visibleIntegrations = @()
+    $script:visibleTasks = @()
+    $script:usageRevision++
+    $script:activityRevision++
+    $script:lastRenderKey = ''
+    $script:lastCostKey = ''
     $script:startedAt = Get-Date
 }
 
@@ -1770,7 +1791,8 @@ function Invoke-UsageGuardCycle {
 # the form's Shown event so a large local log set cannot delay creation of the
 # window and make startup appear unresponsive.
 $requiresPreloadedEvents = (
-    $Once -or $UiSmokeTest -or $UiLayoutSmokeTest -or $MiniSmokeTest -or $IntegrationSmokeTest -or
+    $Once -or $UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or
+    $MiniSmokeTest -or $IntegrationSmokeTest -or
     $TaskSmokeTest -or $DateRangeSmokeTest -or $StatusSmokeTest -or
     $AlertSmokeTest -or $ArchivedSmokeTest -or $PresetSmokeTest -or
     $RangeCacheSmokeTest -or $QuotaResetSmokeTest -or $ExportSmokeTest -or
@@ -2045,7 +2067,10 @@ function Add-Label {
     $label.ForeColor = $uiTextSecondary
     $label.BackColor = [System.Drawing.Color]::Transparent
     $label.AutoEllipsis = $true
-    $label.Anchor = 'Top,Left,Right'
+    # Main-form layout is recalculated explicitly on resize. Right-anchoring
+    # small labels such as VIEW, RANGE, From, and To makes their opaque
+    # backgrounds expand over adjacent buttons and date fields.
+    $label.Anchor = 'Top,Left'
     $form.Controls.Add($label)
     return $label
 }
@@ -2241,13 +2266,29 @@ $initialToDate = if ($script:rangeEnd -eq [datetime]::MaxValue) { (Get-Date).Dat
 $toPicker = Add-DatePicker -Value $initialToDate -X 402 -Y 362 -Width 112
 $loadRangeButton = Add-Button 'Load &dates' 526 361 100 30
 $exportButton = Add-Button 'E&xport CSV' 636 361 100 30
-$historyLabel = Add-Label ("Loaded: {0}" -f (Format-DateRange)) 750 365 530 24 9
+$refreshIntervalLabel = Add-Label 'Refresh s' 750 365 58 24 8
+$refreshIntervalLabel.Font = New-UiFont 8 ([System.Drawing.FontStyle]::Bold)
+$refreshIntervalLabel.ForeColor = $uiTextMuted
+$refreshSecondsBox = New-Object System.Windows.Forms.NumericUpDown
+$refreshSecondsBox.Location = New-Object System.Drawing.Point(812, 361)
+$refreshSecondsBox.Size = New-Object System.Drawing.Size(64, 30)
+$refreshSecondsBox.Minimum = 1
+$refreshSecondsBox.Maximum = 60
+$refreshSecondsBox.Increment = 1
+$refreshSecondsBox.DecimalPlaces = 0
+$refreshSecondsBox.Value = $PollSeconds
+$refreshSecondsBox.Font = New-UiFont 9
+$refreshSecondsBox.BackColor = $uiSurfaceRaised
+$refreshSecondsBox.ForeColor = $uiText
+$refreshSecondsBox.TextAlign = [System.Windows.Forms.HorizontalAlignment]::Center
+$form.Controls.Add($refreshSecondsBox)
+$historyLabel = Add-Label ("Loaded: {0}" -f (Format-DateRange)) 886 365 394 24 9
 $historyLabel.ForeColor = $uiTextMuted
 foreach ($surfaceLabel in @(
     $title, $localLabel, $statusLabel, $freshLabel, $guidanceLabel,
     $minuteLabel, $windowLabel, $quotaLabel, $modelSummaryLabel, $timeSummaryLabel,
     $noteLabel, $sessionSummaryLabel, $integrationSummaryLabel,
-    $modeLabel, $presetLabel, $fromLabel, $toLabel, $historyLabel
+    $modeLabel, $presetLabel, $fromLabel, $toLabel, $refreshIntervalLabel, $historyLabel
 )) {
     $surfaceLabel.BackColor = $uiSurface
 }
@@ -2408,12 +2449,15 @@ $script:normalFormSize = $form.Size
 $script:normalFormLocation = $form.Location
 $script:normalMinimumSize = New-Object System.Drawing.Size(1040, 720)
 $script:normalMiniButtonLocation = $miniButton.Location
+$script:interactionTestMode = [bool]$UiInteractionSmokeTest
+$script:interactionExportPath = ''
+$script:lastInteractionResult = ''
 $script:fullModeControls = @(
     $localLabel, $summaryCard, $commandCard,
     $modelSummaryLabel, $timeSummaryLabel, $noteLabel, $sessionSummaryLabel, $integrationSummaryLabel,
     $modeLabel, $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $clearButton,
     $enterpriseButton, $controlCenterButton, $presetLabel, $presetBox, $fromLabel, $fromPicker, $toLabel, $toPicker, $loadRangeButton, $exportButton,
-    $historyLabel, $tokenLabel, $grid, $taskLabel, $taskGrid,
+    $refreshIntervalLabel, $refreshSecondsBox, $historyLabel, $tokenLabel, $grid, $taskLabel, $taskGrid,
     $integrationLabel, $integrationGrid, $activityLabel, $activityGrid, $explainBox
 )
 
@@ -2435,6 +2479,8 @@ $loadRangeButton.AccessibleName = 'Load selected date range'
 $loadRangeButton.AccessibleDescription = 'Reload aggregate usage events for the dates shown in the From and To controls.'
 $exportButton.AccessibleName = 'Export privacy-safe daily summary'
 $exportButton.AccessibleDescription = 'Write daily aggregate counts only. Prompt content, paths, task names, and identifiers are excluded.'
+$refreshSecondsBox.AccessibleName = 'Refresh interval in seconds'
+$refreshSecondsBox.AccessibleDescription = 'Set how often the monitor checks local Codex log files, from 1 to 60 seconds.'
 $enterpriseButton.AccessibleName = 'Import my local ChatGPT data'
 $enterpriseButton.AccessibleDescription = 'Open a downloaded usage summary or activity export limited to this individual.'
 $controlCenterButton.AccessibleName = 'Open insights and controls'
@@ -2456,6 +2502,7 @@ $toolTip = New-Object System.Windows.Forms.ToolTip
 $toolTip.SetToolTip($presetBox, 'Choose a quick range. Custom keeps the calendar selections.')
 $toolTip.SetToolTip($loadRangeButton, 'Load the complete selected date range (Ctrl+L).')
 $toolTip.SetToolTip($exportButton, 'Export daily aggregates only; no prompts, paths, task names, or identifiers (Ctrl+E).')
+$toolTip.SetToolTip($refreshSecondsBox, 'Check local Codex logs every 1 to 60 seconds. Changes apply immediately and persist for this Windows user.')
 $toolTip.SetToolTip($enterpriseButton, 'Import a downloaded report limited to your own account; files remain on this PC.')
 $toolTip.SetToolTip($controlCenterButton, 'Open offline insights, the usage saver, RTK savings health, cost estimates, downloaded-report comparison, personal settings, and the opt-in usage guard.')
 $toolTip.SetToolTip($miniButton, 'Toggle the always-on-top compact view (Ctrl+M).')
@@ -2463,7 +2510,7 @@ $toolTip.SetToolTip($clearButton, 'Discard the in-memory window and watch only n
 
 $tabOrder = @(
     $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $clearButton, $miniButton,
-    $enterpriseButton, $controlCenterButton, $presetBox, $fromPicker, $toPicker, $loadRangeButton, $exportButton,
+    $enterpriseButton, $controlCenterButton, $presetBox, $fromPicker, $toPicker, $loadRangeButton, $exportButton, $refreshSecondsBox,
     $grid, $taskGrid, $integrationGrid, $activityGrid, $explainBox
 )
 for ($tabIndex = 0; $tabIndex -lt $tabOrder.Count; $tabIndex++) {
@@ -2548,7 +2595,8 @@ function Update-ResponsiveLayout {
         $pair[0].Size = New-Object System.Drawing.Size($summaryRightW, 21)
     }
     $noteLabel.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW - 16), 20)
-    $historyLabel.Size = New-Object System.Drawing.Size([Math]::Max(230, $contentW - 732), 24)
+    $historyLabel.Location = New-Object System.Drawing.Point(886, 365)
+    $historyLabel.Size = New-Object System.Drawing.Size([Math]::Max(100, $contentW - 868), 24)
 
     $explainH = 80
     $explainY = $clientH - $explainH - 22
@@ -3303,6 +3351,8 @@ function Show-ComplianceAnalyticsDialog {
 }
 
 function Show-PersonalImportDialog {
+    param([switch]$ConstructionOnly)
+
     $dialog = New-Object System.Windows.Forms.Form
     $dialog.Text = 'Import my data'
     $dialog.Size = New-Object System.Drawing.Size(660, 350)
@@ -3314,6 +3364,7 @@ function Show-PersonalImportDialog {
     $dialog.ForeColor = $uiText
     $dialog.Font = New-UiFont 9.5
     $dialog.AccessibleName = 'Import my local ChatGPT data'
+    $choiceButtons = [System.Collections.Generic.List[System.Windows.Forms.Button]]::new()
 
     $heading = New-Object System.Windows.Forms.Label
     $heading.Text = 'Import my data'
@@ -3366,6 +3417,7 @@ function Show-PersonalImportDialog {
             $dialog.Close()
         }.GetNewClosure())
         $panel.Controls.Add($button)
+        $choiceButtons.Add($button)
     }
     Add-PersonalImportChoice -Title 'Usage summary (CSV)' `
         -Description 'Messages, models, and tools from a downloaded summary filtered to you.' `
@@ -3380,6 +3432,17 @@ function Show-PersonalImportDialog {
     $privacy.Size = New-Object System.Drawing.Size(600, 24)
     $privacy.ForeColor = $uiTextMuted
     $dialog.Controls.Add($privacy)
+    if ($ConstructionOnly) {
+        if ($choiceButtons.Count -ne 2 -or
+            @($choiceButtons | Where-Object {
+                -not $_.Enabled -or [string]::IsNullOrWhiteSpace([string]$_.AccessibleName)
+            }).Count -gt 0) {
+            throw 'The personal import chooser does not expose both enabled choices.'
+        }
+        Write-Output ('Import chooser constructed successfully; Choices={0}' -f $choiceButtons.Count)
+        $dialog.Dispose()
+        return
+    }
     [void]$dialog.ShowDialog($form)
     $choice = [string]$dialog.Tag
     $dialog.Dispose()
@@ -4998,11 +5061,12 @@ function Show-ControlCenterDialog {
             $script:personalSettings = Import-PersonalMonitorSettings -Path $script:statePaths.PersonalSettings
             $script:guardPolicy = Import-UsageGuardPolicy -Path $script:statePaths.GuardPolicy
             $script:costProfile = Import-UsageCostProfile -Path $script:statePaths.CostProfile
+            $refreshSecondsBox.Value = [decimal][int]$script:personalSettings.RefreshSeconds
             $script:lastCostKey = ''
             $script:diagnosticRows = @()
             Refresh-PersonalSettingsTab
             [System.Windows.Forms.MessageBox]::Show(
-                ('Restored {0} file(s). Active settings were reloaded; restart the monitor if any display looks stale.' -f $result.Files),
+                ('Restored {0} file(s). Active settings, including the refresh interval, were reloaded.' -f $result.Files),
                 'Personal backup restored'
             ) | Out-Null
         }
@@ -5093,8 +5157,10 @@ function Invoke-LoadSelectedRange {
         Set-MonitorDateRange -FromDate $fromPicker.Value -ToDate $toPicker.Value
         Refresh-Display
         $explainBox.Text = 'Loaded complete local Codex logs for {0}.' -f (Format-DateRange)
+        $script:lastInteractionResult = 'DatesLoaded'
     }
     catch {
+        if ($script:interactionTestMode) { throw }
         [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to load dates') | Out-Null
     }
     finally {
@@ -5103,24 +5169,45 @@ function Invoke-LoadSelectedRange {
     }
 }
 
+function Set-MonitorRefreshInterval {
+    param([ValidateRange(1, 60)][int]$Seconds)
+
+    if ($null -eq $script:refreshTimer) {
+        throw 'The monitor refresh timer is not available.'
+    }
+    $script:refreshTimer.Interval = $Seconds * 1000
+    $script:personalSettings.RefreshSeconds = $Seconds
+    Save-PersonalSettingsState
+    $historyLabel.Text = 'Refresh every {0}s | Loaded: {1}' -f $Seconds, (Format-DateRange)
+    $explainBox.Text = 'Local log refresh interval changed to {0} second(s). This does not call ChatGPT or create usage.' -f $Seconds
+    $script:lastInteractionResult = 'RefreshChanged'
+}
+
 function Invoke-LocalSummaryExport {
-    $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+    param([string]$DestinationPath = '')
+
+    $saveDialog = $null
     try {
-        $saveDialog.Title = 'Export privacy-safe daily usage summary'
-        $saveDialog.Filter = 'CSV files (*.csv)|*.csv'
-        $saveDialog.DefaultExt = 'csv'
-        $saveDialog.AddExtension = $true
-        $saveDialog.OverwritePrompt = $true
-        $saveDialog.FileName = 'codex-usage-summary-{0}-{1}.csv' -f $script:rangeStart.ToString('yyyyMMdd'), $(if ($script:rangeEnd -eq [datetime]::MaxValue) { (Get-Date).ToString('yyyyMMdd') } else { $script:rangeEnd.ToString('yyyyMMdd') })
-        if ($saveDialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
-        $rows = @(Export-LocalUsageSummary -Path $saveDialog.FileName -UsageEvents $script:visibleEvents -IntegrationEvents $script:visibleIntegrations)
+        if ([string]::IsNullOrWhiteSpace($DestinationPath)) {
+            $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+            $saveDialog.Title = 'Export privacy-safe daily usage summary'
+            $saveDialog.Filter = 'CSV files (*.csv)|*.csv'
+            $saveDialog.DefaultExt = 'csv'
+            $saveDialog.AddExtension = $true
+            $saveDialog.OverwritePrompt = $true
+            $saveDialog.FileName = 'codex-usage-summary-{0}-{1}.csv' -f $script:rangeStart.ToString('yyyyMMdd'), $(if ($script:rangeEnd -eq [datetime]::MaxValue) { (Get-Date).ToString('yyyyMMdd') } else { $script:rangeEnd.ToString('yyyyMMdd') })
+            if ($saveDialog.ShowDialog($form) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+            $DestinationPath = $saveDialog.FileName
+        }
+        $rows = @(Export-LocalUsageSummary -Path $DestinationPath -UsageEvents $script:visibleEvents -IntegrationEvents $script:visibleIntegrations)
         $explainBox.Text = 'Exported {0} daily aggregate row(s). The CSV excludes prompts, responses, task names, session IDs, source paths, tool arguments, and tool output.' -f $rows.Count
     }
     catch {
+        if ($script:interactionTestMode) { throw }
         [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to export summary') | Out-Null
     }
     finally {
-        $saveDialog.Dispose()
+        if ($null -ne $saveDialog) { $saveDialog.Dispose() }
     }
 }
 
@@ -5209,23 +5296,49 @@ $pinButton.Add_Click({
 $clearButton.Add_Click({
     Reset-MonitorWindow
     Refresh-Display
+    $freshStartedAt = $script:startedAt.ToString('HH:mm:ss')
+    $historyLabel.Text = 'Fresh window started {0} - waiting for the next completed turn' -f $freshStartedAt
+    $explainBox.Text = 'Fresh monitoring window started at {0}. Existing log files were not deleted; only events completed after this time will appear.' -f $freshStartedAt
+    $script:lastInteractionResult = 'FreshStarted'
 })
 $loadRangeButton.Add_Click({ Invoke-LoadSelectedRange })
-$exportButton.Add_Click({ Invoke-LocalSummaryExport })
+$exportButton.Add_Click({
+    if ($script:interactionTestMode) {
+        Invoke-LocalSummaryExport -DestinationPath $script:interactionExportPath
+    }
+    else {
+        Invoke-LocalSummaryExport
+    }
+    $script:lastInteractionResult = 'ExportCompleted'
+})
 $enterpriseButton.Add_Click({
     try {
-        Show-PersonalImportDialog
+        if ($script:interactionTestMode) {
+            Show-PersonalImportDialog -ConstructionOnly
+            $script:lastInteractionResult = 'ImportReady'
+        }
+        else {
+            Show-PersonalImportDialog
+        }
     }
     catch {
+        if ($script:interactionTestMode) { throw }
         [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to import my data') | Out-Null
     }
 })
 $controlCenterButton.Add_Click({
     try {
-        Show-ControlCenterDialog
-        Refresh-Display
+        if ($script:interactionTestMode) {
+            Show-ControlCenterDialog -ConstructionOnly
+            $script:lastInteractionResult = 'ControlCenterReady'
+        }
+        else {
+            Show-ControlCenterDialog
+            Refresh-Display
+        }
     }
     catch {
+        if ($script:interactionTestMode) { throw }
         [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to open control center') | Out-Null
     }
 })
@@ -5248,6 +5361,15 @@ $fromPicker.Add_ValueChanged({
 })
 $toPicker.Add_ValueChanged({
     if (-not $script:isApplyingPreset) { $presetBox.SelectedItem = 'Custom' }
+})
+$refreshSecondsBox.Add_ValueChanged({
+    try {
+        Set-MonitorRefreshInterval -Seconds ([int]$refreshSecondsBox.Value)
+    }
+    catch {
+        if ($script:interactionTestMode) { throw }
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to change refresh interval') | Out-Null
+    }
 })
 $miniButton.Add_Click({
     Set-MiniMode -Enabled (-not $script:isMiniMode)
@@ -5337,6 +5459,7 @@ if ($null -ne $script:instanceCoordinator) {
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = $PollSeconds * 1000
+$script:refreshTimer = $timer
 $timer.Add_Tick({
     try {
         Refresh-Display
@@ -5384,6 +5507,7 @@ $startupRefresh = [System.Windows.Forms.MethodInvoker]{
     }
 }
 $form.Add_Shown({
+    if ($automatedMode) { return }
     if ($StartMinimizedToTray -and $null -ne $script:notifyIcon) {
         $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
         $form.ShowInTaskbar = $false
@@ -5398,6 +5522,7 @@ $form.Add_Shown({
 })
 $form.Add_FormClosed({
     $timer.Stop()
+    $script:refreshTimer = $null
     $startupRestoreTimer.Stop()
     $startupRestoreTimer.Dispose()
     if ($null -ne $instanceActivationTimer) {
@@ -5411,13 +5536,18 @@ $form.Add_FormClosed({
     if ($null -ne $script:trayMenu) { $script:trayMenu.Dispose() }
 })
 
-if ($UiSmokeTest -or $UiLayoutSmokeTest -or $MiniSmokeTest) {
+if ($UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or $MiniSmokeTest) {
     Refresh-Display
     if ($StartMini -and -not $script:isMiniMode) {
         Set-MiniMode -Enabled $true
         Refresh-Display
     }
     if ($UiLayoutSmokeTest) {
+        # Reproduce the work-PC path: create at a compact width and then widen
+        # the form. The former Right anchors expanded small opaque labels over
+        # the controls immediately to their right.
+        $form.ClientSize = New-Object System.Drawing.Size(1040, 720)
+        Update-ResponsiveLayout
         $form.ClientSize = New-Object System.Drawing.Size(1280, 720)
         Update-ResponsiveLayout
         $surfacePairs = @(
@@ -5434,6 +5564,17 @@ if ($UiSmokeTest -or $UiLayoutSmokeTest -or $MiniSmokeTest) {
                 throw "Dashboard surface '$($pair[0].AccessibleName)' covers a foreground control."
             }
         }
+        foreach ($pair in @(
+            @($modeLabel, $viewAllButton),
+            @($presetLabel, $presetBox),
+            @($fromLabel, $fromPicker),
+            @($toLabel, $toPicker),
+            @($refreshIntervalLabel, $refreshSecondsBox)
+        )) {
+            if ($pair[0].Bounds.IntersectsWith($pair[1].Bounds)) {
+                throw "Dashboard label '$($pair[0].Text)' overlaps '$($pair[1].AccessibleName)'."
+            }
+        }
         if (($integrationLabel.Top - $grid.Bottom) -lt 10 -or
             ($activityLabel.Top - $taskGrid.Bottom) -lt 10 -or
             ($integrationGrid.Top - $integrationLabel.Bottom) -lt 4 -or
@@ -5442,7 +5583,137 @@ if ($UiSmokeTest -or $UiLayoutSmokeTest -or $MiniSmokeTest) {
             $form.AutoScrollMinSize.Height -lt ($explainBox.Bottom + 20)) {
             throw 'Dashboard sections overlap or are outside the short-screen scroll canvas.'
         }
-        Write-Output 'Layout=1280x720; CardsBehind=True; SectionsSeparated=True; VirtualHeight=900'
+        Write-Output 'Layout=1040-to-1280x720; CardsBehind=True; ControlsClear=True; SectionsSeparated=True; VirtualHeight=900'
+    }
+    elseif ($UiInteractionSmokeTest) {
+        $interactionExport = Join-Path ([System.IO.Path]::GetTempPath()) (
+            'live-codex-interactions-{0}.csv' -f [guid]::NewGuid().ToString('N')
+        )
+        try {
+            $form.Show()
+            [System.Windows.Forms.Application]::DoEvents()
+            if ($script:events.Count -lt 1 -or [string]::IsNullOrWhiteSpace([string]$script:latestSession)) {
+                throw 'Main-button interaction test requires loaded token events and a latest session.'
+            }
+
+            $viewLatestButton.PerformClick()
+            if ($script:viewMode -ne 'Follow latest') { throw 'Follow latest button did not change the view.' }
+            $viewAllButton.PerformClick()
+            if ($script:viewMode -ne 'All sessions') { throw 'All tasks button did not change the view.' }
+
+            $expectedPinnedSession = [string]$script:latestSession
+            $pinButton.PerformClick()
+            if ($script:viewMode -ne 'Pinned session' -or $script:pinnedSource -ne $expectedPinnedSession) {
+                throw 'Pin latest button did not pin the latest session.'
+            }
+            $viewAllButton.PerformClick()
+            $viewPinnedButton.PerformClick()
+            if ($script:viewMode -ne 'Pinned session') { throw 'Pinned button did not change the view.' }
+
+            $viewAllButton.PerformClick()
+            $fromPicker.Value = [datetime]'2026-07-25'
+            $toPicker.Value = [datetime]'2026-07-25'
+            $loadRangeButton.PerformClick()
+            if ($script:lastInteractionResult -ne 'DatesLoaded' -or
+                $script:rangeStart.Date -ne [datetime]'2026-07-25' -or
+                $script:rangeEnd.Date -ne [datetime]'2026-07-25' -or
+                $script:visibleEvents.Count -ne 1 -or -not $loadRangeButton.Enabled) {
+                throw ('Load dates button failed. Result={0}; Start={1}; End={2}; Visible={3}; Enabled={4}' -f `
+                    $script:lastInteractionResult, $script:rangeStart.ToString('yyyy-MM-dd'),
+                    $script:rangeEnd.ToString('yyyy-MM-dd'), $script:visibleEvents.Count, $loadRangeButton.Enabled)
+            }
+
+            $script:interactionExportPath = $interactionExport
+            $exportButton.PerformClick()
+            if ($script:lastInteractionResult -ne 'ExportCompleted' -or
+                -not (Test-Path -LiteralPath $interactionExport -PathType Leaf) -or
+                @(Import-Csv -LiteralPath $interactionExport).Count -ne 1) {
+                throw 'Export CSV button did not create the expected privacy-safe summary.'
+            }
+
+            $enterpriseButton.PerformClick()
+            if ($script:lastInteractionResult -ne 'ImportReady') {
+                throw 'Import my data button did not construct its two-choice dialog.'
+            }
+            $controlCenterButton.PerformClick()
+            if ($script:lastInteractionResult -ne 'ControlCenterReady') {
+                throw 'Control center button did not construct its workspace.'
+            }
+
+            $refreshSecondsBox.Value = 7
+            if ($script:lastInteractionResult -ne 'RefreshChanged' -or
+                $script:refreshTimer.Interval -ne 7000 -or
+                [int]$script:personalSettings.RefreshSeconds -ne 7 -or
+                $historyLabel.Text -notmatch '^Refresh every 7s') {
+                throw 'Refresh interval control did not apply the selected seconds immediately.'
+            }
+
+            $miniButton.PerformClick()
+            if (-not $script:isMiniMode -or $miniButton.Text -notmatch 'Full mode') {
+                throw 'Mini mode button did not enter compact mode.'
+            }
+            $miniButton.PerformClick()
+            if ($script:isMiniMode -or $miniButton.Text -notmatch 'Mini mode') {
+                throw 'Mini mode button did not return to the full dashboard.'
+            }
+
+            $usageRevisionBeforeReset = [int64]$script:usageRevision
+            $activityRevisionBeforeReset = [int64]$script:activityRevision
+            $today = (Get-Date).Date
+            Set-MonitorDateRange -FromDate $today -ToDate $today
+            Refresh-Display
+            $clearButton.PerformClick()
+            if ($script:lastInteractionResult -ne 'FreshStarted' -or
+                $script:events.Count -ne 0 -or $script:activityEvents.Count -ne 0 -or
+                $script:integrationEvents.Count -ne 0 -or $script:visibleEvents.Count -ne 0 -or
+                $script:usageRevision -le $usageRevisionBeforeReset -or
+                $script:activityRevision -le $activityRevisionBeforeReset -or
+                $script:fileOffsets.Count -lt 1 -or
+                $historyLabel.Text -notmatch '^Fresh window started \d{2}:\d{2}:\d{2}' -or
+                $explainBox.Text -notmatch 'Existing log files were not deleted') {
+                throw 'Start fresh button did not reset state and provide visible confirmation.'
+            }
+
+            $freshAppendVerified = $false
+            if (-not [string]::IsNullOrWhiteSpace($InteractionAppendPath)) {
+                $resolvedCodexHome = [System.IO.Path]::GetFullPath($CodexHome)
+                $resolvedAppendPath = [System.IO.Path]::GetFullPath($InteractionAppendPath)
+                $codexPrefix = $resolvedCodexHome.TrimEnd('\') + '\'
+                if (-not $resolvedAppendPath.StartsWith(
+                    $codexPrefix,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -or -not (Test-Path -LiteralPath $resolvedAppendPath -PathType Leaf)) {
+                    throw 'Interaction append path must be an existing test log inside the supplied CodexHome.'
+                }
+                $appendTimestamp = (Get-Date).ToString('o')
+                $appendLine = '{{"timestamp":"{0}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":333,"cached_input_tokens":111,"output_tokens":22,"reasoning_output_tokens":7,"total_tokens":355}}}}}}}}' -f $appendTimestamp
+                Add-Content -LiteralPath $resolvedAppendPath -Value $appendLine -Encoding UTF8
+                Refresh-Display
+                if ($script:events.Count -ne 1 -or $script:visibleEvents.Count -ne 1 -or
+                    [int64]$script:visibleEvents[0].NewInput -ne 222 -or
+                    [int64]$script:visibleEvents[0].FreshBurn -ne 244) {
+                    throw 'Start fresh did not detect the next appended completed token event.'
+                }
+                $freshAppendVerified = $true
+            }
+
+            $mainButtons = @(
+                $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $clearButton,
+                $miniButton, $enterpriseButton, $controlCenterButton, $loadRangeButton, $exportButton
+            )
+            if (@($mainButtons | Where-Object { -not $_.Enabled }).Count -gt 0) {
+                throw 'One or more main dashboard buttons remained disabled after interaction QA.'
+            }
+            if (-not $refreshSecondsBox.Enabled) {
+                throw 'Refresh interval control remained disabled after interaction QA.'
+            }
+            Write-Output ('MainButtons=10; RefreshControl=True; ViewModes=True; Pin=True; FreshReset=True; FreshAppend={0}; Dates=True; Export=True; Import=True; ControlCenter=True; MiniToggle=True' -f $freshAppendVerified)
+        }
+        finally {
+            $script:interactionExportPath = ''
+            $form.Hide()
+            Remove-Item -LiteralPath $interactionExport -Force -ErrorAction SilentlyContinue
+        }
     }
     elseif ($MiniSmokeTest) {
         Set-MiniMode -Enabled $true

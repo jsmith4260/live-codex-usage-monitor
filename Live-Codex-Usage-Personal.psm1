@@ -9,6 +9,7 @@ function New-PersonalMonitorSettings {
         SchemaVersion = 1
         StartAtSignIn = $false
         StartMinimizedToTray = $false
+        RefreshSeconds = 5
         LastBackupAt = $null
         LastDiagnosticsAt = $null
     }
@@ -28,6 +29,17 @@ function Import-PersonalMonitorSettings {
             throw "Personal settings are missing $property."
         }
     }
+    # RefreshSeconds was added to schema 1 after the first public settings
+    # files existed. Preserve backward compatibility instead of resetting the
+    # user's other personal preferences.
+    if ($null -eq $settings.PSObject.Properties['RefreshSeconds']) {
+        $settings | Add-Member -NotePropertyName RefreshSeconds -NotePropertyValue 5
+    }
+    $refreshSeconds = [int]$settings.RefreshSeconds
+    if ($refreshSeconds -lt 1 -or $refreshSeconds -gt 60) {
+        throw 'Personal settings RefreshSeconds must be between 1 and 60.'
+    }
+    $settings.RefreshSeconds = $refreshSeconds
     return $settings
 }
 
@@ -39,6 +51,10 @@ function Export-PersonalMonitorSettings {
     )
 
     if ([int]$Settings.SchemaVersion -ne 1) { throw 'Refusing to write unsupported personal settings.' }
+    if ($null -eq $Settings.PSObject.Properties['RefreshSeconds'] -or
+        [int]$Settings.RefreshSeconds -lt 1 -or [int]$Settings.RefreshSeconds -gt 60) {
+        throw 'Refusing to write personal settings with an invalid RefreshSeconds value.'
+    }
     $parent = Split-Path -Parent $Path
     if (-not [string]::IsNullOrWhiteSpace($parent) -and
         -not (Test-Path -LiteralPath $parent -PathType Container)) {

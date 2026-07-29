@@ -1,7 +1,7 @@
 # Live Codex Usage Monitor
 
 [![Windows tests](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml/badge.svg)](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml)
-![Version 3.4.4](https://img.shields.io/badge/version-3.4.4-00b7c3)
+![Version 3.4.5](https://img.shields.io/badge/version-3.4.5-00b7c3)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078d4)
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391fe)
 ![Local only](https://img.shields.io/badge/privacy-local--only-22c55e)
@@ -26,7 +26,7 @@ view of Codex usage while keeping personal activity on the same computer.
 
 | Capability | What you get |
 | --- | --- |
-| Live usage | Fresh input, output, reasoning, cached context, task health, and model mix from local Codex JSONL |
+| Live usage | Fresh input, output, reasoning, cached context, task health, and model mix from local Codex JSONL, with a persistent 1-60 second refresh interval |
 | Quota awareness | Independent short- and long-window meters, reset times, pace, warnings, and an optional usage guard |
 | Usage Saver | Prompt-cache efficiency, fresh-task break-even advice, compaction health, and reversible Saver/Balanced/Quality profiles |
 | History | Today, 7-day, 30-day, all-available, or any custom inclusive date range |
@@ -122,6 +122,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 ```powershell
 # Watch all active tasks instead of only the latest one
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -InitialView "All sessions"
+
+# Override the saved refresh interval for this launch
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -PollSeconds 10
 
 # Set the initial startup window to the last 48 hours
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -HistoryHours 48

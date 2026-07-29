@@ -32,13 +32,20 @@ function Invoke-MonitorTest {
         [string]$Name,
         [string[]]$Arguments,
         [string]$ExpectedPattern = '',
-        [string]$RejectedPattern = ''
+        [string]$RejectedPattern = '',
+        [string]$CodexHomeOverride = ''
     )
 
     Write-Host "  $Name"
+    $testCodexHome = if ([string]::IsNullOrWhiteSpace($CodexHomeOverride)) {
+        $fixtureHome
+    }
+    else {
+        $CodexHomeOverride
+    }
     $common = @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $monitor,
-        '-CodexHome', $fixtureHome, '-HistoryHours', '87600',
+        '-CodexHome', $testCodexHome, '-HistoryHours', '87600',
         '-NoNotifications', '-NoSound', '-DisablePersistence', '-DisableRtkIntegration'
     )
     $previousErrorAction = $ErrorActionPreference
@@ -67,7 +74,31 @@ function Invoke-MonitorTest {
 Invoke-MonitorTest -Name 'Token semantics' -Arguments @('-Once') -ExpectedPattern 'Events=3;.*FreshBurn=650;.*NewInput=500'
 Invoke-MonitorTest -Name 'Full GUI construction' -Arguments @('-UiSmokeTest') -ExpectedPattern 'GUI controls constructed successfully'
 Invoke-MonitorTest -Name 'Laptop-height dashboard layout' -Arguments @('-UiLayoutSmokeTest') `
-    -ExpectedPattern 'Layout=1280x720; CardsBehind=True; SectionsSeparated=True; VirtualHeight=900'
+    -ExpectedPattern 'Layout=1040-to-1280x720; CardsBehind=True; ControlsClear=True; SectionsSeparated=True; VirtualHeight=900'
+$interactionTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+    'live-codex-ui-interactions-{0}' -f [guid]::NewGuid().ToString('N')
+)
+$interactionCodexHome = Join-Path $interactionTestRoot 'codex-home'
+try {
+    [void](New-Item -ItemType Directory -Path $interactionTestRoot)
+    Copy-Item -LiteralPath $fixtureHome -Destination $interactionCodexHome -Recurse
+    $interactionAppendPath = @(
+        Get-ChildItem -LiteralPath (Join-Path $interactionCodexHome 'sessions') -Recurse -Filter '*.jsonl' -File |
+            Sort-Object FullName |
+            Select-Object -First 1
+    )[0].FullName
+    Invoke-MonitorTest -Name 'All main dashboard button interactions' `
+        -CodexHomeOverride $interactionCodexHome `
+        -Arguments @('-UiInteractionSmokeTest', '-InteractionAppendPath', $interactionAppendPath) `
+        -ExpectedPattern 'MainButtons=10; RefreshControl=True; ViewModes=True; Pin=True; FreshReset=True; FreshAppend=True; Dates=True; Export=True; Import=True; ControlCenter=True; MiniToggle=True'
+}
+finally {
+    $resolvedInteractionRoot = [System.IO.Path]::GetFullPath($interactionTestRoot)
+    $resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    if ($resolvedInteractionRoot.StartsWith($resolvedTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $resolvedInteractionRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 Invoke-MonitorTest -Name 'Mini layout toggle' -Arguments @('-MiniSmokeTest') -ExpectedPattern 'Mini mode toggled successfully'
 Invoke-MonitorTest -Name 'Mini startup construction' -Arguments @('-UiSmokeTest', '-StartMini') -ExpectedPattern 'GUI controls constructed successfully'
 Invoke-MonitorTest -Name 'Integration parsing' -Arguments @('-IntegrationSmokeTest') -ExpectedPattern 'IntegrationCalls=1;.*Local shell:1'
@@ -581,6 +612,7 @@ try {
     $personalSettingsPath = Join-Path $personalStateRoot 'personal-settings-v1.json'
     $personalSettings = New-PersonalMonitorSettings
     $personalSettings.StartMinimizedToTray = $true
+    $personalSettings.RefreshSeconds = 9
     Export-PersonalMonitorSettings -Settings $personalSettings -Path $personalSettingsPath
     $personalAggregate = New-PrivacySafeAggregateSnapshot -UsageEvents $storeEvents -IntegrationEvents @()
     Write-PrivacySafeAggregateStore -Path (Join-Path $personalStateRoot 'aggregate-v1.json') -Snapshot $personalAggregate
@@ -594,8 +626,21 @@ try {
     Export-PersonalMonitorSettings -Settings $personalSettings -Path $personalSettingsPath
     $restoreResult = Import-PersonalMonitorBackup -Path $personalBackup.Path -StateRoot $personalRestoreRoot -Confirm:$false
     $restoredSettings = Import-PersonalMonitorSettings -Path (Join-Path $personalRestoreRoot 'personal-settings-v1.json')
-    if (-not $restoreResult.Restored -or -not $restoredSettings.StartMinimizedToTray) {
+    if (-not $restoreResult.Restored -or -not $restoredSettings.StartMinimizedToTray -or
+        [int]$restoredSettings.RefreshSeconds -ne 9) {
         throw 'Personal backup restore did not preserve validated settings.'
+    }
+    $legacySettingsPath = Join-Path $personalTestRoot 'legacy-personal-settings-v1.json'
+    [pscustomobject][ordered]@{
+        SchemaVersion = 1
+        StartAtSignIn = $false
+        StartMinimizedToTray = $false
+        LastBackupAt = $null
+        LastDiagnosticsAt = $null
+    } | ConvertTo-Json | Set-Content -LiteralPath $legacySettingsPath -Encoding UTF8
+    $legacySettings = Import-PersonalMonitorSettings -Path $legacySettingsPath
+    if ([int]$legacySettings.RefreshSeconds -ne 5) {
+        throw 'Legacy personal settings did not receive the safe five-second refresh default.'
     }
     $registration = Set-PersonalStartupRegistration -Enabled $true -LauncherPath $monitor `
         -StartupFolder $personalStartupRoot -Confirm:$false

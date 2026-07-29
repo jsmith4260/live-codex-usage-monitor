@@ -2,6 +2,17 @@
 
 The Settings tab is designed for one Windows user and keeps every operation local.
 
+## Refresh interval
+
+The main dashboard's **Refresh s** field accepts 1 through 60 seconds. A change
+applies immediately to local Codex-log polling and is saved for the current
+Windows user. It does not poll ChatGPT, call an API, create a turn, or incur
+usage. The `-PollSeconds` command-line option overrides the saved value for one
+launch without replacing it.
+
+Older personal-settings files remain compatible and receive the five-second
+default the first time they are loaded.
+
 ## Backup and restore
 
 Personal backups may contain:
