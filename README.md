@@ -148,7 +148,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 `
 # Raise or lower spike thresholds
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -WarnMinuteFreshTokens 50000 -WarnContextTokens 150000
 
-# Persistently turn Windows usage-alert notifications off or back on.
+# Persistently turn Windows pop-up and audible usage alerts off or back on.
 # Restart a running monitor after changing this setting.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -WindowsNotifications Off
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -WindowsNotifications On
@@ -219,7 +219,7 @@ See [Windows reliability and distribution](docs/WINDOWS-RELIABILITY-AND-DISTRIBU
 - **Token source now** names the local Codex client that produced the measured token event. The adjacent coverage note distinguishes live tokens, imported ChatGPT activity, and separate API usage.
 - **Chats using tokens** groups usage by chat title. Use **Latest chat** to follow the newest chat or double-click a row to focus it.
 - **Recent turns** keeps the chat title and source next to each token event so spikes are attributable at a glance.
-- **Alerts: On/Off** is a dashboard-level toggle for Windows usage-alert notifications. It applies immediately and saves the preference.
+- **Alerts: On/Off** is a dashboard-level master toggle for Windows usage-alert pop-ups and audible alerts. It applies immediately and saves the preference.
 - **Technical details** reveals integration counts and sanitized activity only when needed; it never shows tool inputs or outputs.
 
 ## Keyboard shortcuts

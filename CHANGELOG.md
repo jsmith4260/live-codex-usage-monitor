@@ -14,7 +14,7 @@
 ### Reporting, privacy, and reliability
 
 - Add content-free JSON reports with daily, weekly, monthly, and anonymized-session aggregation plus an explicit reporting time zone.
-- Add Settings controls for hiding local chat titles and disabling Windows usage-alert notifications.
+- Add Settings controls for hiding local chat titles and disabling Windows pop-up and audible usage alerts.
 - Add a monthly, review-only GitHub rate-card reminder; desktop runtime remains offline.
 - Correct the dashboard chat table so **Last active** contains a timestamp rather than status.
 
@@ -22,7 +22,7 @@
 
 ### Clearer live dashboard
 
-- Add a persistent `-WindowsNotifications On|Off` PowerShell switch for the Windows usage-alert preference.
+- Add a persistent `-WindowsNotifications On|Off` PowerShell switch and dashboard toggle for Windows pop-up and audible usage alerts.
 - Switch the default dashboard to a calm light Fluent-style palette with stronger type, surface, selection, and focus contrast.
 - Make the actual Codex chat title the primary identity for current and recent
   usage by reading Codex's local `session_index.jsonl`; keep titles in memory

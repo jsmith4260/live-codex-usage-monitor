@@ -1612,7 +1612,7 @@ function Send-Alert {
 
     $script:lastAlertEventId = $UsageEvent.EventId
     $message = 'Fresh {0}; new input {1}; last 60s fresh {2}' -f (Format-Tokens $UsageEvent.FreshBurn), (Format-Tokens $UsageEvent.NewInput), (Format-Tokens $Minute.FreshBurn)
-    if (-not $NoSound) {
+    if (Test-MonitorAudioAlertsEnabled) {
         [System.Media.SystemSounds]::Exclamation.Play()
     }
     if ((Test-MonitorNotificationsEnabled) -and $null -ne $script:notifyIcon) {
@@ -1764,8 +1764,16 @@ function Save-PersonalSettingsState {
     Export-PersonalMonitorSettings -Settings $script:personalSettings -Path $script:statePaths.PersonalSettings
 }
 
+function Test-MonitorAlertsEnabled {
+    return [bool]$script:personalSettings.NotificationsEnabled
+}
+
 function Test-MonitorNotificationsEnabled {
-    return (-not $NoNotifications -and [bool]$script:personalSettings.NotificationsEnabled)
+    return (-not $NoNotifications -and (Test-MonitorAlertsEnabled))
+}
+
+function Test-MonitorAudioAlertsEnabled {
+    return (-not $NoSound -and (Test-MonitorAlertsEnabled))
 }
 
 function Enable-MonitorNotificationIcon {
@@ -1806,7 +1814,7 @@ function Set-MonitorNotificationsPreference {
     elseif (-not $Enabled) {
         Disable-MonitorNotificationIcon
     }
-    return (Test-MonitorNotificationsEnabled)
+    return (Test-MonitorAlertsEnabled)
 }
 
 function Update-PersonalDiagnostics {
@@ -1927,7 +1935,7 @@ function Invoke-UsageGuardCycle {
     $reason = if ($enforcementError) { "Enforcement error: $enforcementError" } else { [string]$evaluation.Reason }
     if (($evaluation.Crossed -or [bool]$policy.Locked) -and $reason -ne $script:lastGuardAlertReason) {
         $script:lastGuardAlertReason = $reason
-        if (-not $NoSound) { [System.Media.SystemSounds]::Exclamation.Play() }
+        if (Test-MonitorAudioAlertsEnabled) { [System.Media.SystemSounds]::Exclamation.Play() }
         if ((Test-MonitorNotificationsEnabled) -and $null -ne $script:notifyIcon) {
             $script:notifyIcon.BalloonTipTitle = 'Codex usage guard'
             $script:notifyIcon.BalloonTipText = $reason
@@ -2427,6 +2435,8 @@ $controlCenterButton = Add-Button '&Insights && settings' 560 318 132 30
 $detailsButton = Add-Button '&Technical details' 702 318 112 30
 $clearButton = Add-Button '&Start fresh' 824 318 96 30
 $notificationToggleButton = Add-Button 'Alerts: On' 930 318 96 30
+$notificationToggleButton.AccessibleName = 'Usage alerts'
+$notificationToggleButton.AccessibleDescription = 'Turn Windows notification pop-ups and audible usage alerts on or off.'
 $enterpriseButton = Add-Button 'Import &activity' 890 353 118 30
 
 $presetLabel = Add-Label 'RANGE' 26 357 42 24 8
@@ -2744,7 +2754,7 @@ function Update-ViewButtons {
 }
 
 function Update-WindowsNotificationToggle {
-    $enabled = Test-MonitorNotificationsEnabled
+    $enabled = Test-MonitorAlertsEnabled
     $notificationToggleButton.Text = if ($enabled) { 'Alerts: On' } else { 'Alerts: Off' }
     $notificationToggleButton.BackColor = if ($enabled) { $uiAccentDark } else { $uiSurfaceRaised }
     $notificationToggleButton.ForeColor = if ($enabled) { $uiOnAccent } else { $uiText }
@@ -5367,12 +5377,12 @@ function Show-ControlCenterDialog {
         -Text 'JSON reports use local Codex token events. Downloaded single-user OpenAI summaries remain separately labeled because activity counts are not token totals.' `
         -X 14 -Y 40 -Width 950 -Height 24 -Size 8.5 -Color $uiTextSecondary)
     $notificationsCheck = New-Object System.Windows.Forms.CheckBox
-    $notificationsCheck.Text = 'Show Windows usage-alert notifications'
+    $notificationsCheck.Text = 'Enable usage alerts (Windows + sound)'
     $notificationsCheck.Location = New-Object System.Drawing.Point(14, 72)
     $notificationsCheck.Size = New-Object System.Drawing.Size(290, 26)
     $notificationsCheck.ForeColor = $uiText
-    $notificationsCheck.AccessibleName = 'Windows usage-alert notifications'
-    $notificationsCheck.AccessibleDescription = 'Turn Windows notification pop-ups for monitor alerts on or off.'
+    $notificationsCheck.AccessibleName = 'Usage alerts'
+    $notificationsCheck.AccessibleDescription = 'Turn Windows notification pop-ups and audible usage alerts on or off.'
     $reportingPanel.Controls.Add($notificationsCheck)
     $chatTitlesCheck = New-Object System.Windows.Forms.CheckBox
     $chatTitlesCheck.Text = 'Show local chat titles'
@@ -6164,11 +6174,14 @@ if ($UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or $MiniSmo
             $notificationsBeforeToggle = [bool]$script:personalSettings.NotificationsEnabled
             $notificationToggleButton.PerformClick()
             if ([bool]$script:personalSettings.NotificationsEnabled -eq $notificationsBeforeToggle) {
-                throw 'Dashboard alert toggle did not update the Windows notification preference.'
+                throw 'Dashboard alert toggle did not update the master alert preference.'
+            }
+            if ((Test-MonitorAlertsEnabled) -ne (-not $notificationsBeforeToggle)) {
+                throw 'Dashboard alert toggle did not apply the master alert preference.'
             }
             $notificationToggleButton.PerformClick()
             if ([bool]$script:personalSettings.NotificationsEnabled -ne $notificationsBeforeToggle) {
-                throw 'Dashboard alert toggle did not restore the Windows notification preference.'
+                throw 'Dashboard alert toggle did not restore the master alert preference.'
             }
 
             $refreshSecondsBox.Value = 7
