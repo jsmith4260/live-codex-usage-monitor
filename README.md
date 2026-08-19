@@ -17,7 +17,7 @@ creating any additional paid usage.
 · [View the changelog](CHANGELOG.md)
 · [Review the privacy model](SECURITY.md)
 
-![Live Codex Usage Monitor dashboard showing quota, token events, tasks, integrations, and sanitized activity](docs/images/dashboard-v3.3.png)
+![Live Codex Usage Monitor 3.4.7 dashboard showing local chat titles, token sources, quota status, and sanitized fixture activity](docs/images/dashboard-v3.4.7.png)
 
 ## Why use it?
 
