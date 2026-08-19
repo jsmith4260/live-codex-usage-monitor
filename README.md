@@ -19,6 +19,14 @@ creating any additional paid usage.
 
 ![Live Codex Usage Monitor dashboard showing quota, token events, tasks, integrations, and sanitized activity](docs/images/dashboard-v3.3.png)
 
+## What's new in 3.4.7
+
+- **Official history** records aggregate values you explicitly see in the signed-in Codex analytics dashboard, then reconciles same-period turns and plugin calls with local records.
+- **Privacy-safe JSON reports** summarize usage by day, week, month, or anonymized session in the local time zone you choose.
+- **Clearer alerts and chat context** show local chat titles in memory only, identify the originating Codex client, and use one saved toggle for Windows pop-up and audible usage alerts.
+
+These additions remain local-only: the app does not sign in, scrape browser data, call undocumented account endpoints, or export titles, content, paths, or identifiers.
+
 ## Why use it?
 
 Live Codex Usage Monitor is built for an individual who wants a native Windows
