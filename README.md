@@ -1,7 +1,7 @@
 # Live Codex Usage Monitor
 
 [![Windows tests](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml/badge.svg)](https://github.com/jsmith4260/live-codex-usage-monitor/actions/workflows/windows-tests.yml)
-![Version 3.4.5](https://img.shields.io/badge/version-3.4.5-00b7c3)
+![Version 3.4.7](https://img.shields.io/badge/version-3.4.7-00b7c3)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078d4)
 ![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391fe)
 ![Local only](https://img.shields.io/badge/privacy-local--only-22c55e)
@@ -26,14 +26,15 @@ view of Codex usage while keeping personal activity on the same computer.
 
 | Capability | What you get |
 | --- | --- |
-| Live usage | Fresh input, output, reasoning, cached context, task health, and model mix from local Codex JSONL, with a persistent 1-60 second refresh interval |
+| Live usage | The actual Codex chat title, originating Codex client, fresh input, output, reasoning, cached context, chat health, and model mix from local Codex files, with a persistent 1-60 second refresh interval |
 | Quota awareness | Independent short- and long-window meters, reset times, pace, warnings, and an optional usage guard |
 | Usage Saver | Prompt-cache efficiency, fresh-task break-even advice, compaction health, and reversible Saver/Balanced/Quality profiles |
 | History | Today, 7-day, 30-day, all-available, or any custom inclusive date range |
 | Windows reliability | Single-instance launch behavior, tray restoration, hidden-console launchers, sanitized diagnostics, and local backup/restore |
-| Personal ChatGPT coverage | Manual, local comparison of a downloaded single-user report for web, desktop, Excel, and PowerPoint activity |
+| Personal ChatGPT coverage | Manual, local comparison of a downloaded single-user report for Chat/Work on web, desktop, or mobile; Excel, Google Sheets, PowerPoint, GPTs, Projects, Skills, and Apps where the report includes them |
 | Cost context | Clearly labeled Codex credit estimates, API-equivalent rates where known, and user-configured spending parameters |
 | Privacy | No account polling, cookies, telemetry upload, prompt storage, network service, or monitoring-generated ChatGPT cost |
+| OpenAI reports | Privacy-safe JSON aggregates by day, week, month, or anonymized session; local time-zone selection; no titles, paths, content, or identifiers |
 
 ## Quick start
 
@@ -85,7 +86,7 @@ Use this monitor to understand the shape of local Codex work without creating mo
 - Optional RTK diagnostics read only RTK's local aggregate savings/history output. The monitor forces `RTK_TELEMETRY_DISABLED=1` for every RTK child process.
 - The Saver workspace reads only aggregate counters and allowlisted Codex configuration keys. It never persists a full `config.toml`, tool/server name, command, argument, or raw log line.
 - Efficiency profiles, safe configuration repair, rollback, and the optional output-budget policy require affirmative in-app actions. None is silently enabled.
-- Prompt-derived task names are disabled by default. Tasks use timestamp/session labels unless the optional `-ShowPromptTaskTitles` switch is supplied.
+- The dashboard reads Codex's local `session_index.jsonl` to show the actual chat title. Titles stay in memory and are never exported. If the index has no matching entry, the UI says **Title unavailable** beside the timestamp instead of presenting a time as though it were a title.
 - Prompts, responses, tool arguments, tool output, credentials, client data, and working-directory paths are not persisted or transmitted.
 - Local CSV output contains daily counts and token totals only. It excludes task names, session IDs, source paths, prompts, responses, and tool data.
 - The optional persistent history under `%LOCALAPPDATA%\LiveCodexUsageMonitor` contains dates and aggregate counters only. It never contains prompts, responses, session names, account identifiers, or source paths. Use `-DisablePersistence` to turn it off.
@@ -135,11 +136,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 # Exclude archived sessions when only active history is wanted
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -IncludeArchivedSessions:$false
 
-# Opt in to in-memory task titles derived from local requests
+# Legacy fallback only: derive an in-memory label from the first local request
+# when the Codex chat index has no matching title
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -ShowPromptTaskTitles
+
+# Write a local, content-free JSON report (Daily, Weekly, Monthly, or Session)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 `
+  -ReportJsonPath C:\MyReports\codex-weekly.json -ReportGroupBy Weekly `
+  -ReportingTimeZone 'Eastern Standard Time'
 
 # Raise or lower spike thresholds
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -WarnMinuteFreshTokens 50000 -WarnContextTokens 150000
+
+# Persistently turn Windows usage-alert notifications off or back on.
+# Restart a running monitor after changing this setting.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -WindowsNotifications Off
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -WindowsNotifications On
 
 # Disable RTK health checks for this launch, or point to an approved RTK binary
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -DisableRtkIntegration
@@ -153,12 +165,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Live-Codex-Usage-GUI.ps1 -
 
 - Fresh token burn: new input + output. Reasoning tokens are displayed separately but are already included in output.
 - Replayed context separately from fresh work, so cached context does not look like a new charge.
-- Task/session breakdown with model, effort/options when present in logs, averages, cache ratio, and health.
-- View buttons for All tasks, Latest, and Pinned.
+- Chat breakdown with the actual Codex title, model, recent activity, averages, cache ratio, and health.
+- View buttons for All chats, Latest chat, and Pinned.
 - **Today**, **Last 7 days**, **Last 30 days**, **All available**, and **Custom** history ranges.
 - **From** and **To** calendar selectors that load complete local history for any inclusive date range.
 - Active and archived Codex sessions.
-- Privacy-safe timestamp/session task names by default. Prompt-derived display names are an explicit opt-in and remain in memory only.
+- Actual Codex chat titles from the local chat index, held in memory only and excluded from exports. An explicit **Title unavailable** label plus timestamp is the fallback.
+- A Settings toggle to hide local chat titles, a separate toggle for Windows alert pop-ups, and a privacy-safe reporting time-zone selector.
 - Integration/tool activity counts by local shell, file edits, web, MCP/app/plugin names, waits, and plan updates.
 - Optional RTK aggregate shell-output savings, daily reduction estimates, freshness, parser failures, and possible-prefix-bypass warnings.
 - Prompt-cache hit rate and calculated full-rate credit/API-equivalent differences, kept separate from RTK's estimated shell-output savings.
@@ -179,6 +192,7 @@ Open **Control center** or press `Ctrl+I`.
 - **RTK health**: local-only command-output reduction estimates, daily history, freshness, parser/fallback failures, and possible bypass status.
 - **Cost**: official credit estimates for known models, API-equivalent USD only where a current official API rate is published, and optional contract parameters for a configured cash estimate.
 - **Compare**: local daily credit estimates versus a downloaded personal CSV/JSON, with variance, coverage, and freshness labels.
+- **Official history**: aggregate checkpoints copied from the signed-in official Codex analytics dashboard, with same-period turn and plugin-call reconciliation plus clear official-only metrics.
 - **Usage guard**: disabled by default. Advisory mode warns; explicitly approved Enforced mode stops only exact user-approved Codex executable paths after a grace period.
 - **Sources**: provenance, model mix, state locations, and the privacy/zero-cost contract.
 - **Settings**: personal backup/restore, start-at-sign-in, sanitized diagnostics, RTK coverage, and guard reliability.
@@ -188,6 +202,8 @@ Open **Control center** or press `Ctrl+I`.
 The bundled rate card is dated. Unknown model names remain unpriced; the app never guesses a fallback unless you explicitly configure one. Fast or special service tiers can use a user-supplied multiplier. Actual dollars are shown only after you provide your own dollars-per-credit, included-credit, fixed-cost, and billing-cycle parameters.
 
 Downloaded reporting is not real-time. Workspace Analytics normally refreshes in 1-24 hours, typically 6-12 hours, with a service target of up to 48 hours. The app labels report age and never fetches the report itself. Put your downloaded snapshots in `%LOCALAPPDATA%\LiveCodexUsageMonitor\official-reports` or select a local file.
+
+For dashboard-only aggregates, open **Official history** in the Control Center and choose **Record dashboard snapshot**. Enter the displayed period and only the counts visible in the official Codex analytics page. The app persists aggregate totals and reconciles same-period turns and plugin calls with its local logs. Lines of code, skills, credits, and tokens remain explicitly official-only; they are never folded into local token or cost totals.
 
 See [offline cost, reconciliation, and guard details](docs/OFFLINE-COST-RECONCILIATION-GUARD.md).
 See [RTK savings and health](docs/RTK-SAVINGS-AND-HEALTH.md) for exact measurement and failure-state semantics.
@@ -199,10 +215,12 @@ See [Windows reliability and distribution](docs/WINDOWS-RELIABILITY-AND-DISTRIBU
 - **Fresh** is uncached/new input plus output for a completed turn. Reasoning is a subset of output and is not counted twice.
 - **Context** is the total context presented to the model. Much of it can be cached/replayed task history, so it is not equivalent to new usage.
 - **Last 60 seconds** is the live window used for the header status and meter. Older task spikes do not keep the header in a Critical state.
-- **Task breakdown** groups activity by local Codex session. Use **Latest** to follow the newest task or double-click a task to pin it.
-- **Integrations/add-ins/plugins** shows call counts and names only. It does not show tool inputs or outputs.
-- **Sanitized activity** shows event types such as token updates, messages, and tool activity, not their content.
-- **logs loaded/available** confirms how many active and archived JSONL files are contributing to the current window.
+- **Chat using tokens now** names the actual Codex chat associated with the newest completed turn.
+- **Token source now** names the local Codex client that produced the measured token event. The adjacent coverage note distinguishes live tokens, imported ChatGPT activity, and separate API usage.
+- **Chats using tokens** groups usage by chat title. Use **Latest chat** to follow the newest chat or double-click a row to focus it.
+- **Recent turns** keeps the chat title and source next to each token event so spikes are attributable at a glance.
+- **Alerts: On/Off** is a dashboard-level toggle for Windows usage-alert notifications. It applies immediately and saves the preference.
+- **Technical details** reveals integration counts and sanitized activity only when needed; it never shows tool inputs or outputs.
 
 ## Keyboard shortcuts
 
@@ -218,11 +236,11 @@ The header is **OK**, **WARN**, or **CRITICAL** based on the latest quota metada
 
 ## Personal ChatGPT coverage
 
-ChatGPT desktop, web, Excel, and PowerPoint do not write the same Codex JSONL token events. Additional personal coverage must come from a downloaded report rather than browser interception, process scraping, or keylogging.
+ChatGPT Chat and Work on web, desktop, and mobile; ChatGPT for Excel, Google Sheets, and PowerPoint; and GPT, Project, Skill, and App activity do not write the same Codex JSONL token events. Additional personal coverage must come from a downloaded report rather than browser interception, process scraping, or keylogging. OpenAI API usage remains a separate source and is not read by this offline monitor.
 
-Click **Import my data** to open a usage-summary CSV or an advanced activity JSONL export that has been filtered to your own account. The app rejects a report containing more than one identity. It shows your message, tool, model, surface, and date aggregates without displaying or retaining names, email addresses, IDs, prompt text, or response text.
+Click **Import activity** to open a usage-summary CSV or an advanced activity JSONL export that has been filtered to your own account. The app rejects a report containing more than one identity. It shows your message, tool, model, surface, and date aggregates without displaying or retaining names, email addresses, IDs, prompt text, or response text.
 
-Personal imports remain manual and local because the monitor never signs in, reads browser cookies, or makes paid/account API calls. Web, desktop, Excel, and PowerPoint coverage depends on what your downloaded report actually contains.
+Personal imports remain manual and local because the monitor never signs in, reads browser cookies, or makes paid/account API calls. Coverage depends on what your downloaded report actually contains, and activity/message counts are never relabeled as token totals.
 
 See the [personal data-source boundary](docs/ENTERPRISE-DATA-SOURCES.md), [personal settings and recovery](docs/PERSONAL-SETTINGS-AND-RECOVERY.md), and [activity export normalizer](docs/COMPLIANCE-NORMALIZER.md).
 
@@ -244,16 +262,18 @@ The result contains date, surface, event type, model, event count, and unique-us
 - It does not call OpenAI.
 - It does not send local logs anywhere.
 - It does not persist raw telemetry. The enabled-by-default local history store contains aggregate daily counters only and can be disabled with `-DisablePersistence`.
-- It does not persist or send prompts, responses, tool arguments, tool output, credentials, client data, or working-directory paths. Prompt-derived task names are disabled by default; if explicitly enabled, they remain only in memory while the dashboard is open.
+- It does not persist or send prompts, responses, chat titles, tool arguments, tool output, credentials, client data, or working-directory paths. Local chat titles are displayed only in memory; the optional prompt-derived fallback also remains in memory.
 - It does not claim estimates are an OpenAI invoice or account balance.
 - It does not claim RTK's byte-derived shell-output estimate is a billed-token count, quota reduction, or cash saving.
 - It does not combine RTK estimates, calculated cache benefits, or optimization opportunities into a misleading total.
 - It does not apply an efficiency profile, repair configuration, change automatic compaction, or install an output policy without an affirmative click.
 - It does not silently price unknown models or assign an actual cash value to a credit.
 - It does not implement a live account or activity API collector, accept account credentials, or bypass product reporting controls.
+- It does not use an undocumented account endpoint or browser scraping. The optional official-dashboard history records aggregate values you explicitly enter from the signed-in page; an administrator-authorized Analytics API integration is a separate future configuration.
 - It does not inspect browser cookies/history, Office documents, prompts, keystrokes, TLS traffic, or private account endpoints.
 - It does not track, compare, rank, or report on other people. Multi-user imports are rejected.
 - The local guard does not block ChatGPT web, Office add-ins, another device, or launches after the monitor exits. Enterprise-mandatory blocking belongs in approved workspace and endpoint policies.
+- The scheduled rate-card review reminder creates a GitHub issue for human review only. It never changes the bundled rate card or gives the running application network access.
 
 ## QA
 

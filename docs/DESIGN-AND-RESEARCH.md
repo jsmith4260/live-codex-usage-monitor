@@ -59,12 +59,21 @@ Third-party prompt proxies and repository bundlers were not adopted because seve
 
 The version 3 interface follows current Microsoft Windows guidance while remaining compatible with PowerShell 5.1 WinForms:
 
-- a neutral layered dark foundation with a single blue interaction accent;
+- a neutral layered light foundation with a single blue interaction accent and restrained semantic colors;
 - semantic warning colors paired with text rather than used alone;
 - Segoe UI Variable Text when installed, with Segoe UI fallback;
 - a clear current-state, context, then command hierarchy;
 - logical tab order, mnemonics, shortcuts, focusable standard controls, accessible names/descriptions, and DPI-aware sizing;
 - text tables paired with custom charts/heatmaps so visual encodings are not the only way to read values.
+
+The streamlined dashboard revision applies progressive disclosure and a clearer information hierarchy:
+
+- the current Codex chat title is the primary identity, followed by the latest-turn usage and plain-language guidance;
+- the default surface shows only chat-level usage, recent turns, and the selected explanation;
+- integration and sanitized event diagnostics are disclosed by a dedicated **Technical details** control;
+- chat titles receive the widest table column and appear beside every recent token event;
+- live Codex token sources are named in the hero and tables, while import-only ChatGPT surfaces and separate API usage are labeled without combining unlike units;
+- controls use sentence case, standard Windows widgets, visible keyboard focus, and consistent labels.
 
 Version 3.4 also adopts per-user single-instance coordination. A named,
 access-controlled mutex prevents duplicate interactive monitors, while a named
@@ -75,17 +84,24 @@ interactive-instance lock.
 Official references:
 
 - [Windows design guidelines](https://learn.microsoft.com/en-us/windows/apps/design/guidelines-overview)
+- [Windows controls and patterns](https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/)
+- [Windows typography](https://learn.microsoft.com/en-us/windows/apps/design/signature-experiences/typography)
+- [Windows accessibility overview](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/accessibility-overview)
 - [Windows color guidance](https://learn.microsoft.com/en-us/windows/apps/design/signature-experiences/color)
 - [Windows keyboard interactions](https://learn.microsoft.com/en-us/windows/apps/develop/input/keyboard-interactions)
 - [Windows Forms accessibility properties](https://learn.microsoft.com/en-us/dotnet/desktop/winforms/advanced/properties-on-windows-forms-controls-that-support-accessibility-guidelines)
 - [Accessible text requirements](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/accessible-text-requirements)
+- [WCAG consistent identification](https://www.w3.org/WAI/WCAG22/Understanding/consistent-identification)
+- [WCAG focus appearance](https://www.w3.org/WAI/WCAG22/Understanding/focus-appearance.html)
 - [Named EventWaitHandle synchronization](https://learn.microsoft.com/en-us/dotnet/standard/threading/eventwaithandle)
 - [Windows Forms Form.Activate behavior](https://learn.microsoft.com/en-us/dotnet/api/system.windows.forms.form.activate)
 
 ## Official report-format sources
 
 - [Workspace analytics for ChatGPT Enterprise and Edu](https://help.openai.com/en/articles/10875114-user-analytics-for-chatgpt-enterprise-and-edu)
+- [Chat, Work, and Codex in the ChatGPT desktop app](https://help.openai.com/en/articles/20001276/)
 - [OpenAI Compliance Platform for Enterprise and Edu](https://help.openai.com/en/articles/9261474-openai-compliance-platform-for-enterprise-customers)
 - [ChatGPT for Excel and Google Sheets](https://help.openai.com/en/articles/20001063-chatgpt-for-excel/)
 - [ChatGPT for PowerPoint](https://help.openai.com/en/articles/20001242-chatgpt-for-powerpoint)
+- [OpenAI API usage reference](https://platform.openai.com/docs/api-reference/usage)
 - [Enterprise admin quickstart](https://help.openai.com/en/articles/20001264)

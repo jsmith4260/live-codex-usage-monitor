@@ -1,5 +1,41 @@
 # Changelog
 
+## 3.4.7 - 2026-08-19
+
+### Official dashboard reconciliation
+
+- Add an aggregate-only **Official history** Control Center tab for values explicitly observed in the signed-in Codex analytics dashboard.
+- Persist dashboard checkpoints with their observation time, selected date range, grouping, and visible aggregate metrics only; include them in personal backups.
+- Reconcile same-period official turns and plugin calls with local Codex records, while retaining lines of code, skills, credits, and tokens as clearly labeled official-only measures.
+- Preserve the desktop runtime's no-credential, no-browser-state, and no-undocumented-account-endpoint boundary.
+
+## 3.4.6 - 2026-08-19
+
+### Reporting, privacy, and reliability
+
+- Add content-free JSON reports with daily, weekly, monthly, and anonymized-session aggregation plus an explicit reporting time zone.
+- Add Settings controls for hiding local chat titles and disabling Windows usage-alert notifications.
+- Add a monthly, review-only GitHub rate-card reminder; desktop runtime remains offline.
+- Correct the dashboard chat table so **Last active** contains a timestamp rather than status.
+
+## Unreleased
+
+### Clearer live dashboard
+
+- Add a persistent `-WindowsNotifications On|Off` PowerShell switch for the Windows usage-alert preference.
+- Switch the default dashboard to a calm light Fluent-style palette with stronger type, surface, selection, and focus contrast.
+- Make the actual Codex chat title the primary identity for current and recent
+  usage by reading Codex's local `session_index.jsonl`; keep titles in memory
+  and exclude them from exports and persistent history.
+- Resolve titles by the session metadata ID as well as the rollout filename, and show titles by default with a persistent opt-out.
+- Show the originating Codex client in the hero, chat list, and recent-turn table; distinguish live Codex tokens from imported ChatGPT activity and separate OpenAI API usage.
+- Replace the dense four-table dashboard with a chat-first overview, a
+  full-width chat list, recent turns, and a plain-language selected-item detail.
+- Move integration counts and sanitized event activity behind a reversible
+  **Technical details** disclosure.
+- Add deterministic fixture coverage for indexed chat titles, responsive layout,
+  the diagnostics disclosure, and mini-mode title visibility.
+
 ## 3.4.5 - 2026-07-29
 
 ### Presentation-quality interaction fixes

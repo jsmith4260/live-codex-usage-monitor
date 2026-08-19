@@ -1,0 +1,43 @@
+name: Rate-card review reminder
+
+on:
+  schedule:
+    - cron: '17 14 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  propose-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Propose reviewed rate-card refresh
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $card = Get-Content -LiteralPath config/usage-rates.json -Raw | ConvertFrom-Json
+          $title = 'Rate-card review due'
+          $existing = gh issue list --state open --search '"Rate-card review due" in:title' --json number --jq '.[0].number'
+          if ($existing) {
+            Write-Host "Existing review issue #$existing remains open."
+            exit 0
+          }
+          $body = @"
+          Review the bundled local rate card before changing it.
+
+          Current effective date: $($card.EffectiveDate)
+          Current retrieved date: $($card.RetrievedDate)
+          Official source: $($card.SourceUrl)
+          API comparison: $($card.ApiPricingSourceUrl)
+
+          This workflow never updates pricing or the application. Verify official sources, update the static JSON with tests, and submit the result for review. Runtime remains offline.
+          "@
+          gh issue create --title $title --body $body

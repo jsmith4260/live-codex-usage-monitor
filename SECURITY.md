@@ -4,7 +4,8 @@ Live Codex Usage Monitor is designed to read local Codex session logs and person
 
 ## Defaults
 
-- Prompt-derived task titles are disabled by default.
+- Actual chat titles are read from Codex's local `session_index.jsonl`, displayed only in memory, and excluded from exports and persistent history. A timestamp is used when no indexed title is available.
+- Prompt-derived fallback titles remain disabled by default.
 - Prompts, responses, tool arguments, tool output, credentials, and working-directory paths are not persisted or transmitted.
 - The monitor does not require an OpenAI API key or network access.
 - Runtime account polling and outbound HTTP clients are forbidden. `Test-ZeroOutbound.ps1` enforces this in release QA.
@@ -14,8 +15,10 @@ Live Codex Usage Monitor is designed to read local Codex session logs and person
   in the extracted release folder after the user chooses to run it, but it
   refuses administrator-enforced `AllSigned` or `Restricted` policy.
 - Explicit CSV outputs contain aggregates only and exclude task names, session IDs, source paths, direct user identifiers, prompts, responses, and tool content.
+- Explicit JSON usage reports apply the same aggregate-only boundary. Session reporting replaces source session identifiers with report-local ordinals.
 - Repository rules exclude local JSONL session logs, generated telemetry, databases, and common secret-file formats.
 - Persistent history contains aggregate dates/counters only. Guard and cost settings contain local numeric parameters and exact executable paths, never credentials.
+- Official dashboard history contains only observation time, selected date range, grouping, and aggregate turns, plugin calls, lines of code, skills, credits, or tokens that the user explicitly enters from the signed-in dashboard. It contains no credentials, browser state, account identifiers, prompt content, or raw logs.
 - Optional RTK checks invoke only the configured local executable, force `RTK_TELEMETRY_DISABLED=1`, and read aggregate history/failure counters. The monitor does not persist command text, arguments, or RTK history.
 - Saver results contain aggregate counters and allowlisted setting labels only. Schema observations, cache calculations, compaction health, fresh-task advice, and tool-surface audit results exclude raw log content, session identifiers, server/tool names, commands, arguments, and paths.
 
@@ -48,7 +51,9 @@ shown; it cannot send content, commands, paths, or configuration values.
 
 ## Cost and downloaded-data boundary
 
-The bundled rate card is a dated static snapshot. Unknown models are unpriced. API-equivalent USD is not a bill, and cash estimates require user-supplied contract parameters. Reconciliation reads only a local CSV/JSON selected or placed by the user; it never signs in or reads browser cookies.
+The bundled rate card is a dated static snapshot. Unknown models are unpriced. API-equivalent USD is not a bill, and cash estimates require user-supplied contract parameters. Reconciliation reads either a local CSV/JSON selected or placed by the user, or aggregate dashboard values that the user explicitly enters; it never signs in, reads browser cookies, or calls undocumented account endpoints.
+
+The monthly GitHub rate-card review reminder is outside the desktop runtime. It proposes a human review issue and never updates rates automatically.
 
 ## Reporting a vulnerability
 

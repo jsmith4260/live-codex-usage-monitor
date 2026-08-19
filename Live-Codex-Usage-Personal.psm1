@@ -10,6 +10,9 @@ function New-PersonalMonitorSettings {
         StartAtSignIn = $false
         StartMinimizedToTray = $false
         RefreshSeconds = 5
+        NotificationsEnabled = $true
+        ShowChatTitles = $true
+        ReportingTimeZone = 'Local'
         LastBackupAt = $null
         LastDiagnosticsAt = $null
     }
@@ -35,11 +38,23 @@ function Import-PersonalMonitorSettings {
     if ($null -eq $settings.PSObject.Properties['RefreshSeconds']) {
         $settings | Add-Member -NotePropertyName RefreshSeconds -NotePropertyValue 5
     }
+    foreach ($default in @(
+        @{ Name='NotificationsEnabled'; Value=$true },
+        @{ Name='ShowChatTitles'; Value=$true },
+        @{ Name='ReportingTimeZone'; Value='Local' }
+    )) {
+        if ($null -eq $settings.PSObject.Properties[$default.Name]) {
+            $settings | Add-Member -NotePropertyName $default.Name -NotePropertyValue $default.Value
+        }
+    }
     $refreshSeconds = [int]$settings.RefreshSeconds
     if ($refreshSeconds -lt 1 -or $refreshSeconds -gt 60) {
         throw 'Personal settings RefreshSeconds must be between 1 and 60.'
     }
     $settings.RefreshSeconds = $refreshSeconds
+    $settings.NotificationsEnabled = [bool]$settings.NotificationsEnabled
+    $settings.ShowChatTitles = [bool]$settings.ShowChatTitles
+    if ([string]::IsNullOrWhiteSpace([string]$settings.ReportingTimeZone)) { $settings.ReportingTimeZone = 'Local' }
     return $settings
 }
 
@@ -54,6 +69,9 @@ function Export-PersonalMonitorSettings {
     if ($null -eq $Settings.PSObject.Properties['RefreshSeconds'] -or
         [int]$Settings.RefreshSeconds -lt 1 -or [int]$Settings.RefreshSeconds -gt 60) {
         throw 'Refusing to write personal settings with an invalid RefreshSeconds value.'
+    }
+    foreach ($property in @('NotificationsEnabled','ShowChatTitles','ReportingTimeZone')) {
+        if ($null -eq $Settings.PSObject.Properties[$property]) { throw "Refusing to write personal settings missing $property." }
     }
     $parent = Split-Path -Parent $Path
     if (-not [string]::IsNullOrWhiteSpace($parent) -and
@@ -153,6 +171,7 @@ function Set-PersonalStartupRegistration {
 function Get-PersonalBackupAllowList {
     return @(
         'aggregate-v1.json',
+        'official-dashboard-history-v1.json',
         'guard-policy-v1.json',
         'cost-profile-v1.json',
         'personal-settings-v1.json'

@@ -49,7 +49,13 @@ param(
     [ValidateRange(1, 100000000)]
     [int]$WarnReasoningTokens = 5000,
     [switch]$ShowPromptTaskTitles,
+    [ValidateSet('Daily','Weekly','Monthly','Session')]
+    [string]$ReportGroupBy = 'Daily',
+    [string]$ReportJsonPath = '',
+    [string]$ReportingTimeZone = '',
     [switch]$NoNotifications,
+    [ValidateSet('On','Off')]
+    [string]$WindowsNotifications = '',
     [switch]$NoSound,
     [string]$StateRoot = '',
     [switch]$DisablePersistence,
@@ -101,12 +107,14 @@ $efficiencyModule = Join-Path $scriptDir 'Live-Codex-Usage-Efficiency.psm1'
 $guardModule = Join-Path $scriptDir 'Live-Codex-Usage-Guard.psm1'
 $instanceModule = Join-Path $scriptDir 'Live-Codex-Usage-Instance.psm1'
 $personalModule = Join-Path $scriptDir 'Live-Codex-Usage-Personal.psm1'
+$officialDashboardModule = Join-Path $scriptDir 'Live-Codex-Usage-OfficialDashboard.psm1'
+$reportModule = Join-Path $scriptDir 'Live-Codex-Usage-Reports.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
 $rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
 $reconciliationModule = Join-Path $scriptDir 'Live-Codex-Usage-Reconciliation.psm1'
 $storeModule = Join-Path $scriptDir 'Live-Codex-Usage-Store.psm1'
 foreach ($modulePath in @(
-    $costModule, $efficiencyModule, $guardModule, $instanceModule, $personalModule,
+    $costModule, $efficiencyModule, $guardModule, $instanceModule, $personalModule, $officialDashboardModule, $reportModule,
     $privacyModule, $rtkModule, $reconciliationModule, $storeModule
 )) {
     if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) { throw "Required module not found: $modulePath" }
@@ -122,7 +130,7 @@ $automatedMode = @(
     $PresetSmokeTest, $RangeCacheSmokeTest, $QuotaResetSmokeTest, $ExportSmokeTest,
     $EnterpriseSmokeTest, $EnterpriseUiSmokeTest, $ComplianceUiSmokeTest,
     $InsightsUiSmokeTest, $PerformanceSmokeTest, $CatalogExpansionSmokeTest,
-    $EfficiencySmokeTest
+    $EfficiencySmokeTest, -not [string]::IsNullOrWhiteSpace($WindowsNotifications)
 ) -contains $true
 if ($AllowMultipleInstances) {
     $script:instanceStatusCode = 'Bypassed'
@@ -164,9 +172,19 @@ catch {
     $script:personalSettings = New-PersonalMonitorSettings
     $script:startupWarnings.Add("Personal settings were reset: $($_.Exception.Message)")
 }
+if (-not [string]::IsNullOrWhiteSpace($WindowsNotifications)) {
+    if ($DisablePersistence) {
+        throw '-WindowsNotifications changes the saved local preference and cannot be combined with -DisablePersistence.'
+    }
+    $script:personalSettings.NotificationsEnabled = ($WindowsNotifications -eq 'On')
+    Export-PersonalMonitorSettings -Settings $script:personalSettings -Path $script:statePaths.PersonalSettings
+    Write-Output ('WindowsNotifications={0}; Persisted=True' -f $WindowsNotifications)
+    exit 0
+}
 if (-not $PSBoundParameters.ContainsKey('PollSeconds')) {
     $PollSeconds = [int]$script:personalSettings.RefreshSeconds
 }
+$script:reportingTimeZone = if ($ReportingTimeZone) { $ReportingTimeZone } else { [string]$script:personalSettings.ReportingTimeZone }
 try { $script:startupRegistration = Test-PersonalStartupRegistration -LauncherPath $script:launcherPath }
 catch {
     $script:startupRegistration = [pscustomobject]@{
@@ -185,6 +203,11 @@ if (-not [string]::IsNullOrWhiteSpace($OfficialSnapshotPath)) {
     $script:officialSnapshotFullName = $officialItem.FullName
     $script:officialSnapshotSignature = '{0}|{1}' -f $officialItem.FullName, $officialItem.LastWriteTimeUtc.Ticks
     $script:manualOfficialSnapshot = $true
+}
+try { $script:officialDashboardHistory = Read-OfficialDashboardHistory -Path $script:statePaths.OfficialDashboardHistory }
+catch {
+    $script:officialDashboardHistory = New-OfficialDashboardHistory
+    $script:startupWarnings.Add("Official dashboard history was reset: $($_.Exception.Message)")
 }
 $script:lastStoreWrite = [datetime]::MinValue
 $script:dailyCosts = @()
@@ -222,6 +245,8 @@ $script:activityEvents = [System.Collections.Generic.List[object]]::new()
 $script:integrationEvents = [System.Collections.Generic.List[object]]::new()
 $script:schemaTracker = New-CodexSchemaTracker
 $script:sessionInfo = @{}
+$script:indexedTaskTitles = @{}
+$script:sessionIndexSignature = ''
 $script:lastAlertEventId = ''
 $script:latestSource = $null
 $script:latestSession = $null
@@ -331,6 +356,10 @@ function Get-SessionInfoRecord {
     param([string]$SourceFile)
     if (-not $script:sessionInfo.ContainsKey($SourceFile)) {
         $script:sessionInfo[$SourceFile] = [pscustomobject]@{
+            SessionId = ''
+            Originator = ''
+            ClientSource = ''
+            Surface = 'Codex (local)'
             Model = ''
             Effort = ''
             ApprovalPolicy = ''
@@ -342,6 +371,21 @@ function Get-SessionInfoRecord {
         }
     }
     return $script:sessionInfo[$SourceFile]
+}
+
+function Get-CodexSurfaceLabel {
+    param([object]$Info)
+
+    if ($null -ne $Info -and -not [string]::IsNullOrWhiteSpace([string]$Info.Originator)) {
+        return Get-ShortValue -Value $Info.Originator -MaxLength 34
+    }
+    $clientSource = if ($null -ne $Info) { ([string]$Info.ClientSource).Trim().ToLowerInvariant() } else { '' }
+    switch ($clientSource) {
+        'cli' { return 'Codex CLI' }
+        'vscode' { return 'Codex desktop' }
+        'desktop' { return 'Codex desktop' }
+        default { return 'Codex (local)' }
+    }
 }
 
 function Get-SafeTaskTitle {
@@ -361,6 +405,59 @@ function Get-SafeTaskTitle {
     $value = ($value -replace '\s+', ' ').Trim()
     if ($value.Length -gt $MaxLength) { return $value.Substring(0, $MaxLength - 3) + '...' }
     return $value
+}
+
+function Get-SessionIdFromPath {
+    param([string]$Path)
+
+    $session = Get-SessionName -Path $Path
+    if ($session -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$') {
+        return $Matches[1].ToLowerInvariant()
+    }
+    return ''
+}
+
+function Update-TaskTitlesFromSessionIndex {
+    param([object[]]$SessionFiles)
+
+    $indexPath = Join-Path $CodexHome 'session_index.jsonl'
+    if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) { return }
+
+    try {
+        $indexFile = Get-Item -LiteralPath $indexPath
+        $signature = '{0}:{1}' -f $indexFile.Length, $indexFile.LastWriteTimeUtc.Ticks
+        if ($signature -ne $script:sessionIndexSignature) {
+            $titles = @{}
+            foreach ($line in [System.IO.File]::ReadLines($indexFile.FullName)) {
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                try { $record = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+                $id = [string](Get-ObjectProperty -Object $record -Name 'id')
+                $threadName = Get-SafeTaskTitle -Text (Get-ObjectProperty -Object $record -Name 'thread_name') -MaxLength 96
+                if ($id -match '^[0-9a-fA-F-]{36}$' -and -not [string]::IsNullOrWhiteSpace($threadName)) {
+                    $titles[$id.ToLowerInvariant()] = $threadName
+                }
+            }
+            $script:indexedTaskTitles = $titles
+            $script:sessionIndexSignature = $signature
+        }
+
+        $changed = $false
+        foreach ($file in @($SessionFiles)) {
+            $id = Get-SessionIdFromPath -Path $file.FullName
+            if (-not $id -or -not $script:indexedTaskTitles.ContainsKey($id)) { continue }
+            $info = Get-SessionInfoRecord -SourceFile $file.FullName
+            $indexedTitle = [string]$script:indexedTaskTitles[$id]
+            if ($info.Title -ne $indexedTitle) {
+                $info.Title = $indexedTitle
+                $changed = $true
+            }
+        }
+        if ($changed) { $script:usageRevision++ }
+    }
+    catch {
+        # The monitor remains usable when Codex is updating the index or an
+        # older installation does not expose it. Timestamp labels are the safe fallback.
+    }
 }
 
 function Test-IsSyntheticTaskTitle {
@@ -414,6 +511,20 @@ function Update-SessionInfo {
     if ($Line -notmatch 'session_meta|turn_context') { return }
     $info = Get-SessionInfoRecord -SourceFile $SourceFile
     if ($Line -match '"type":"session_meta"') {
+        if ($Line -match '"id":"([0-9a-fA-F-]{36})"') {
+            $info.SessionId = $Matches[1].ToLowerInvariant()
+        }
+        if ($Line -match '"originator":"([^"\\]*(?:\\.[^"\\]*)*)"') {
+            $info.Originator = Get-ShortValue -Value ([regex]::Unescape($Matches[1])) -MaxLength 34
+        }
+        if ($Line -match '"source":"([^"\\]*(?:\\.[^"\\]*)*)"') {
+            $info.ClientSource = Get-ShortValue -Value ([regex]::Unescape($Matches[1])) -MaxLength 24
+        }
+        $info.Surface = Get-CodexSurfaceLabel -Info $info
+        if ([bool]$script:personalSettings.ShowChatTitles -and $info.SessionId -and
+            $script:indexedTaskTitles.ContainsKey($info.SessionId)) {
+            $info.Title = [string]$script:indexedTaskTitles[$info.SessionId]
+        }
         if ($Line -match '"context_window":(?:"([^"]+)"|([0-9]+))') {
             $info.ContextWindow = Get-ShortValue $(if ($Matches[1]) { $Matches[1] } else { $Matches[2] })
         }
@@ -468,7 +579,7 @@ function Get-FriendlyTaskLabel {
         try {
             $dt = [datetime]::ParseExact($dateText, 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
             $prefix = if ($dt.Date -eq (Get-Date).Date) { 'Today' } else { $dt.ToString('MM-dd') }
-            return '{0} {1}' -f $prefix, $dt.ToString('HH:mm')
+            return 'Title unavailable - {0} {1}' -f $prefix, $dt.ToString('HH:mm')
         }
         catch { }
     }
@@ -677,6 +788,7 @@ function Convert-TokenEvent {
         Source    = $SourceFile
         Session   = Get-SessionName -Path $SourceFile
         Model     = [string]((Get-SessionInfoRecord -SourceFile $SourceFile).Model)
+        Surface   = Get-CodexSurfaceLabel -Info (Get-SessionInfoRecord -SourceFile $SourceFile)
         Provenance = 'Local Codex log'
     }
     $usageEvent | Add-Member -NotePropertyName Risk -NotePropertyValue (Get-RiskLabel -UsageEvent $usageEvent)
@@ -830,6 +942,9 @@ function Update-Events {
     $script:isScanning = $true
     try {
     $availableFiles = @(Get-SessionLogFiles)
+    if ([bool]$script:personalSettings.ShowChatTitles) {
+        Update-TaskTitlesFromSessionIndex -SessionFiles $availableFiles
+    }
     $files = @($availableFiles |
         Where-Object { $_.LastWriteTime -ge $script:rangeStart } |
         Sort-Object LastWriteTime)
@@ -1296,7 +1411,7 @@ function Get-ModelBreakdownText {
 function Get-TimeSummaryText {
     param([object[]]$VisibleEvents)
 
-    if ($VisibleEvents.Count -eq 0) { return 'Time: waiting for token events' }
+    if ($VisibleEvents.Count -eq 0) { return 'Today: waiting for token events' }
     $now = Get-Date
     $todayEvents = @($VisibleEvents | Where-Object { $_.At.Date -eq $now.Date })
     $hourEvents = @($VisibleEvents | Where-Object { $_.At -ge $now.AddHours(-1) })
@@ -1304,7 +1419,7 @@ function Get-TimeSummaryText {
     $hour = Get-SumPack -Items $hourEvents
     $todayAvg = if ($todayEvents.Count -gt 0) { [int64]($today.FreshBurn / $todayEvents.Count) } else { [int64]0 }
     $hourAvg = if ($hourEvents.Count -gt 0) { [int64]($hour.FreshBurn / $hourEvents.Count) } else { [int64]0 }
-    return 'Time: today fresh {0} ({1} turns, avg {2}) | last hour fresh {3} ({4} turns, avg {5})' -f (Format-Tokens $today.FreshBurn), $todayEvents.Count, (Format-Tokens $todayAvg), (Format-Tokens $hour.FreshBurn), $hourEvents.Count, (Format-Tokens $hourAvg)
+    return 'Today: {0} fresh ({1} turns, avg {2})  |  last hour {3} ({4} turns, avg {5})' -f (Format-Tokens $today.FreshBurn), $todayEvents.Count, (Format-Tokens $todayAvg), (Format-Tokens $hour.FreshBurn), $hourEvents.Count, (Format-Tokens $hourAvg)
 }
 
 function Get-IntegrationBreakdown {
@@ -1364,6 +1479,7 @@ function Get-TaskBreakdown {
             Session = $group.Name
             Task = Get-FriendlyTaskLabel -Path $sourceForTask
             Model = $info.Model
+            Surface = $(if ($latest.PSObject.Properties['Surface']) { [string]$latest.Surface } else { Get-CodexSurfaceLabel -Info $info })
             Effort = $info.Effort
             ApprovalPolicy = $info.ApprovalPolicy
             ApprovalsReviewer = $info.ApprovalsReviewer
@@ -1394,7 +1510,7 @@ function Get-ExplainText {
     $share = if ($minute.Total -gt 0) { [Math]::Round(($UsageEvent.Total / [double]$minute.Total) * 100, 1) } else { 0 }
     $cachedRatio = if ($UsageEvent.Input -gt 0) { [Math]::Round(($UsageEvent.Cached / [double]$UsageEvent.Input) * 100, 1) } else { 0 }
 
-    return ('{0} | {1} | fresh {2} = new input {3} + output {4}; reasoning {5} is included in output. Context total {6}; {7}% of input was cached. This row is {8}% of visible last-60-second context. Session: {9}' -f
+    return ('{0} | {1} | fresh {2} = new input {3} + output {4}; reasoning {5} is included in output. Context total {6}; {7}% of input was cached. This row is {8}% of visible last-60-second context. Chat: {9}' -f
         $UsageEvent.At.ToString('HH:mm:ss'),
         $UsageEvent.Risk,
         (Format-Tokens $UsageEvent.FreshBurn),
@@ -1404,7 +1520,7 @@ function Get-ExplainText {
         (Format-Tokens $UsageEvent.Total),
         $cachedRatio,
         $share,
-        (Get-ShortSessionName -Path $UsageEvent.Source -MaxLength 55))
+        (Get-FriendlyTaskLabel -Path $UsageEvent.Source))
 }
 
 function Get-TaskExplainText {
@@ -1499,7 +1615,7 @@ function Send-Alert {
     if (-not $NoSound) {
         [System.Media.SystemSounds]::Exclamation.Play()
     }
-    if (-not $NoNotifications -and $null -ne $script:notifyIcon) {
+    if ((Test-MonitorNotificationsEnabled) -and $null -ne $script:notifyIcon) {
         $script:notifyIcon.BalloonTipTitle = 'Codex usage alert'
         $script:notifyIcon.BalloonTipText = $message
         $script:notifyIcon.ShowBalloonTip(4000)
@@ -1601,7 +1717,7 @@ function Update-RtkSavingsState {
         if ([string]$script:rtkSnapshot.HealthCode -in $problemCodes -and
             [string]$script:rtkSnapshot.HealthCode -ne $script:lastRtkAlertCode) {
             $script:lastRtkAlertCode = [string]$script:rtkSnapshot.HealthCode
-            if (-not $NoNotifications -and $null -ne $script:notifyIcon) {
+            if ((Test-MonitorNotificationsEnabled) -and $null -ne $script:notifyIcon) {
                 $script:notifyIcon.BalloonTipTitle = 'RTK savings health'
                 $script:notifyIcon.BalloonTipText = [string]$script:rtkSnapshot.Message
                 $script:notifyIcon.ShowBalloonTip(5000)
@@ -1613,7 +1729,7 @@ function Update-RtkSavingsState {
     }
     catch {
         $script:lastRtkCheck = $now
-        if (-not $NoNotifications -and $null -ne $script:notifyIcon) {
+        if ((Test-MonitorNotificationsEnabled) -and $null -ne $script:notifyIcon) {
             $script:notifyIcon.BalloonTipTitle = 'RTK savings health'
             $script:notifyIcon.BalloonTipText = 'RTK local diagnostics failed: ' + $_.Exception.Message
             $script:notifyIcon.ShowBalloonTip(5000)
@@ -1646,6 +1762,51 @@ function Save-UsageGuardState {
 function Save-PersonalSettingsState {
     if ($DisablePersistence) { return }
     Export-PersonalMonitorSettings -Settings $script:personalSettings -Path $script:statePaths.PersonalSettings
+}
+
+function Test-MonitorNotificationsEnabled {
+    return (-not $NoNotifications -and [bool]$script:personalSettings.NotificationsEnabled)
+}
+
+function Enable-MonitorNotificationIcon {
+    if ($null -ne $script:notifyIcon) { return }
+    $script:notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+    $script:notifyIcon.Icon = [System.Drawing.SystemIcons]::Information
+    $script:notifyIcon.Text = 'Live Codex Usage'
+    $script:notifyIcon.Visible = $true
+    $trayMenuVariable = Get-Variable -Name trayMenu -Scope Script -ErrorAction SilentlyContinue
+    if ($null -ne $trayMenuVariable -and $null -ne $trayMenuVariable.Value) {
+        $script:notifyIcon.ContextMenuStrip = $trayMenuVariable.Value
+    }
+    if ($null -ne $script:mainForm) {
+        $script:notifyIcon.Add_DoubleClick({
+            $script:mainForm.ShowInTaskbar = $true
+            $script:mainForm.Show()
+            $script:mainForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
+            $script:mainForm.Activate()
+        })
+    }
+}
+
+function Disable-MonitorNotificationIcon {
+    if ($null -eq $script:notifyIcon) { return }
+    $script:notifyIcon.Visible = $false
+    $script:notifyIcon.Dispose()
+    $script:notifyIcon = $null
+}
+
+function Set-MonitorNotificationsPreference {
+    param([bool]$Enabled)
+
+    $script:personalSettings.NotificationsEnabled = $Enabled
+    Save-PersonalSettingsState
+    if ($Enabled -and -not $NoNotifications) {
+        Enable-MonitorNotificationIcon
+    }
+    elseif (-not $Enabled) {
+        Disable-MonitorNotificationIcon
+    }
+    return (Test-MonitorNotificationsEnabled)
 }
 
 function Update-PersonalDiagnostics {
@@ -1767,7 +1928,7 @@ function Invoke-UsageGuardCycle {
     if (($evaluation.Crossed -or [bool]$policy.Locked) -and $reason -ne $script:lastGuardAlertReason) {
         $script:lastGuardAlertReason = $reason
         if (-not $NoSound) { [System.Media.SystemSounds]::Exclamation.Play() }
-        if (-not $NoNotifications -and $null -ne $script:notifyIcon) {
+        if ((Test-MonitorNotificationsEnabled) -and $null -ne $script:notifyIcon) {
             $script:notifyIcon.BalloonTipTitle = 'Codex usage guard'
             $script:notifyIcon.BalloonTipText = $reason
             $script:notifyIcon.ShowBalloonTip(5000)
@@ -1798,7 +1959,7 @@ $requiresPreloadedEvents = (
     $RangeCacheSmokeTest -or $QuotaResetSmokeTest -or $ExportSmokeTest -or
     $EnterpriseSmokeTest -or $EnterpriseUiSmokeTest -or
     $ComplianceUiSmokeTest -or $InsightsUiSmokeTest -or $PerformanceSmokeTest -or
-    $CatalogExpansionSmokeTest -or $EfficiencySmokeTest
+    $CatalogExpansionSmokeTest -or $EfficiencySmokeTest -or -not [string]::IsNullOrWhiteSpace($ReportJsonPath)
 )
 if ($requiresPreloadedEvents) {
     Update-Events
@@ -1856,7 +2017,7 @@ if ($TaskSmokeTest) {
     $visible = @(Get-DisplayEvents -Mode 'All sessions')
     $tasks = @(Get-TaskBreakdown -VisibleEvents $visible | Select-Object -First 8)
     $summary = if ($tasks.Count -gt 0) {
-        ($tasks | ForEach-Object { '{0} [{1}]' -f $_.Task, $(if ($_.Model) { $_.Model } else { 'unknown' }) }) -join ' | '
+        ($tasks | ForEach-Object { '{0} [{1}; {2}]' -f $_.Task, $(if ($_.Model) { $_.Model } else { 'unknown' }), $_.Surface }) -join ' | '
     }
     else {
         'none'
@@ -1985,12 +2146,7 @@ if ($StatusSmokeTest) {
     exit 0
 }
 
-if (-not $NoNotifications) {
-    $script:notifyIcon = New-Object System.Windows.Forms.NotifyIcon
-    $script:notifyIcon.Icon = [System.Drawing.SystemIcons]::Information
-    $script:notifyIcon.Text = 'Live Codex Usage'
-    $script:notifyIcon.Visible = $true
-}
+if (Test-MonitorNotificationsEnabled) { Enable-MonitorNotificationIcon }
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Live Codex Usage - Local Logs Only'
@@ -2006,21 +2162,22 @@ $form.KeyPreview = $true
 $form.AccessibleName = 'Live Codex Usage Monitor'
 $form.AccessibleDescription = 'Private, offline dashboard for aggregate Codex usage from local session logs.'
 
-# Fluent-inspired local theme. Semantic warning colors are reserved for state;
-# blue is the only navigation/action accent.
-$uiWindow = [System.Drawing.Color]::FromArgb(17, 19, 23)
-$uiSurface = [System.Drawing.Color]::FromArgb(27, 31, 36)
-$uiSurfaceRaised = [System.Drawing.Color]::FromArgb(34, 39, 46)
-$uiBorder = [System.Drawing.Color]::FromArgb(55, 62, 72)
-$uiText = [System.Drawing.Color]::FromArgb(242, 244, 247)
-$uiTextSecondary = [System.Drawing.Color]::FromArgb(190, 197, 207)
-$uiTextMuted = [System.Drawing.Color]::FromArgb(151, 160, 173)
-$uiAccent = [System.Drawing.Color]::FromArgb(76, 194, 255)
-$uiAccentDark = [System.Drawing.Color]::FromArgb(15, 108, 189)
-$uiSuccess = [System.Drawing.Color]::FromArgb(126, 231, 135)
-$uiWarning = [System.Drawing.Color]::FromArgb(255, 209, 102)
-$uiCritical = [System.Drawing.Color]::FromArgb(255, 123, 114)
-$uiSelection = [System.Drawing.Color]::FromArgb(23, 77, 108)
+# Calm Fluent-inspired light theme. Neutral surfaces establish hierarchy;
+# color is reserved for actions and states, which are also named in text.
+$uiWindow = [System.Drawing.Color]::FromArgb(244, 247, 250)
+$uiSurface = [System.Drawing.Color]::FromArgb(255, 255, 255)
+$uiSurfaceRaised = [System.Drawing.Color]::FromArgb(238, 243, 248)
+$uiBorder = [System.Drawing.Color]::FromArgb(207, 216, 226)
+$uiText = [System.Drawing.Color]::FromArgb(24, 35, 46)
+$uiTextSecondary = [System.Drawing.Color]::FromArgb(61, 76, 92)
+$uiTextMuted = [System.Drawing.Color]::FromArgb(91, 108, 124)
+$uiAccent = [System.Drawing.Color]::FromArgb(15, 108, 189)
+$uiAccentDark = [System.Drawing.Color]::FromArgb(0, 95, 184)
+$uiOnAccent = [System.Drawing.Color]::White
+$uiSuccess = [System.Drawing.Color]::FromArgb(16, 124, 65)
+$uiWarning = [System.Drawing.Color]::FromArgb(139, 86, 0)
+$uiCritical = [System.Drawing.Color]::FromArgb(196, 43, 28)
+$uiSelection = [System.Drawing.Color]::FromArgb(218, 235, 251)
 
 $uiFontFamily = 'Segoe UI'
 try {
@@ -2089,8 +2246,8 @@ function Add-Button {
     $button.Font = New-UiFont 9
     $button.FlatAppearance.BorderColor = $uiBorder
     $button.FlatAppearance.BorderSize = 1
-    $button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(44, 51, 60)
-    $button.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(49, 57, 67)
+    $button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(225, 236, 247)
+    $button.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(211, 228, 244)
     $button.Cursor = [System.Windows.Forms.Cursors]::Hand
     $form.Controls.Add($button)
     return $button
@@ -2134,7 +2291,7 @@ function Set-GridTheme {
     $DataGrid.DefaultCellStyle.SelectionForeColor = $uiText
     $DataGrid.DefaultCellStyle.Font = New-UiFont 9
     $DataGrid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(4, 1, 4, 1)
-    $DataGrid.AlternatingRowsDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(30, 35, 41)
+    $DataGrid.AlternatingRowsDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(247, 249, 252)
     $DataGrid.RowTemplate.Height = 28
     $DataGrid.ShowCellToolTips = $true
 }
@@ -2185,17 +2342,27 @@ function Set-TabTheme {
     })
 }
 
-$heroCard = Add-SurfacePanel 12 12 1296 142 'Current usage overview'
-$summaryCard = Add-SurfacePanel 12 164 1296 142 'Usage context and privacy summary'
-$commandCard = Add-SurfacePanel 12 316 1296 78 'Monitor controls and date range'
+$heroCard = Add-SurfacePanel 12 12 1296 184 'Current chat and usage overview'
+$summaryCard = Add-SurfacePanel 12 206 1296 92 'Usage summary'
+$commandCard = Add-SurfacePanel 12 308 1296 82 'Monitor controls and date range'
 
-$title = Add-Label 'Live Codex usage' 26 22 650 34 20
-$title.Font = New-UiFont 20 ([System.Drawing.FontStyle]::Bold)
+$title = Add-Label 'Codex usage' 26 20 650 30 18
+$title.Font = New-UiFont 18 ([System.Drawing.FontStyle]::Bold)
 $title.ForeColor = $uiText
-$title.AccessibleDescription = 'Aggregate local usage. No prompt or response content is displayed.'
-$localLabel = Add-Label 'LOCAL LOGS  /  PRIVATE BY DEFAULT' 28 56 620 18 8
+$title.AccessibleDescription = 'Local Codex usage with the current chat identified by its Codex title.'
+$localLabel = Add-Label 'LOCAL  /  PRIVATE  /  LIVE' 28 50 620 18 8
 $localLabel.Font = New-UiFont 8 ([System.Drawing.FontStyle]::Bold)
 $localLabel.ForeColor = $uiAccent
+$currentChatCaption = Add-Label 'CHAT USING TOKENS NOW' 26 74 720 18 8
+$currentChatCaption.Font = New-UiFont 8 ([System.Drawing.FontStyle]::Bold)
+$currentChatCaption.ForeColor = $uiTextMuted
+$currentChatLabel = Add-Label 'Waiting for a completed Codex turn' 26 94 790 30 16
+$currentChatLabel.Font = New-UiFont 16 ([System.Drawing.FontStyle]::Bold)
+$currentChatLabel.ForeColor = $uiText
+$currentChatLabel.AccessibleName = 'Current Codex chat title'
+$currentChatLabel.AccessibleDescription = 'The actual local Codex chat title associated with the latest token event.'
+$currentChatMetaLabel = Add-Label 'No active chat detected yet' 26 124 790 20 9
+$currentChatMetaLabel.ForeColor = $uiTextSecondary
 $statusLabel = Add-Label 'Status: waiting' 856 26 246 28 12
 $statusLabel.Font = New-UiFont 12 ([System.Drawing.FontStyle]::Bold)
 $statusLabel.ForeColor = $uiWarning
@@ -2216,41 +2383,57 @@ $statusMeterFill.Size = New-Object System.Drawing.Size(0, 8)
 $statusMeterFill.BackColor = $uiSuccess
 $statusMeter.Controls.Add($statusMeterFill)
 $form.Controls.Add($statusMeter)
-$freshLabel = Add-Label 'Fresh burn: waiting for token events' 26 80 1254 28 14
-$freshLabel.Font = New-UiFont 14 ([System.Drawing.FontStyle]::Bold)
+$sourceCoverageTitle = Add-Label 'TOKEN SOURCE NOW' 856 78 422 18 8
+$sourceCoverageTitle.Font = New-UiFont 8 ([System.Drawing.FontStyle]::Bold)
+$sourceCoverageTitle.ForeColor = $uiTextMuted
+$sourceCoverageLabel = Add-Label "Codex (local) - live tokens from local logs`r`nChatGPT desktop/web/mobile + Office/Sheets - import activity`r`nOpenAI API - separate usage dashboard" 856 96 422 52 9
+$sourceCoverageLabel.ForeColor = $uiTextSecondary
+$sourceCoverageLabel.AutoEllipsis = $false
+$sourceCoverageLabel.AccessibleName = 'Token source and coverage summary'
+$sourceCoverageLabel.AccessibleDescription = 'Identifies live local Codex token data, import-only ChatGPT activity surfaces, and separate API usage.'
+$freshLabel = Add-Label 'Latest turn: waiting for token events' 26 150 1254 24 11
+$freshLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
 $freshLabel.ForeColor = $uiSuccess
-$guidanceLabel = Add-Label 'Action: waiting for the next completed Codex turn.' 26 114 1254 24 10
+$guidanceLabel = Add-Label 'Waiting for the next completed Codex turn.' 26 268 1254 20 9
 $guidanceLabel.ForeColor = $uiTextSecondary
-$minuteLabel = Add-Label 'Last 60 seconds: waiting for token events' 26 176 1254 24 11
-$minuteLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
+$minuteLabel = Add-Label 'Last minute: waiting for token events' 26 216 610 24 10
+$minuteLabel.Font = New-UiFont 10 ([System.Drawing.FontStyle]::Bold)
 $minuteLabel.ForeColor = $uiText
-$windowLabel = Add-Label 'Monitor window: 0' 26 204 735 21 9
-$quotaLabel = Add-Label 'Quota: waiting for token event metadata' 782 204 498 21 9
+$windowLabel = Add-Label 'Selected range: waiting for token events' 26 242 610 21 9
+$quotaLabel = Add-Label 'Quota: waiting for token event metadata' 660 242 620 21 9
 $quotaLabel.ForeColor = $uiTextSecondary
 $modelSummaryLabel = Add-Label 'Models: waiting for token events' 26 228 735 21 9
-$timeSummaryLabel = Add-Label 'Time: waiting for token events' 782 228 498 21 9
-$noteLabel = Add-Label 'Private, offline, and zero-cost monitoring. Cost and downloaded-report status will appear here.' 26 276 1254 20 9
+$modelSummaryLabel.Visible = $false
+$timeSummaryLabel = Add-Label 'Today: waiting for token events' 660 216 620 24 10
+$timeSummaryLabel.Font = New-UiFont 10 ([System.Drawing.FontStyle]::Bold)
+$timeSummaryLabel.ForeColor = $uiText
+$noteLabel = Add-Label 'Private, offline, and zero-cost monitoring.' 26 276 1254 20 9
 $noteLabel.ForeColor = $uiTextMuted
+$noteLabel.Visible = $false
 $sessionSummaryLabel = Add-Label 'Sessions: waiting for token events' 26 252 735 21 9
+$sessionSummaryLabel.Visible = $false
 $integrationSummaryLabel = Add-Label 'Integrations: waiting for tool/plugin/add-in calls' 782 252 498 21 9
+$integrationSummaryLabel.Visible = $false
 
-$modeLabel = Add-Label 'VIEW' 26 329 40 24 8
+$modeLabel = Add-Label 'SHOW' 26 321 40 24 8
 $modeLabel.Font = New-UiFont 8 ([System.Drawing.FontStyle]::Bold)
 $modeLabel.ForeColor = $uiTextMuted
-$viewAllButton = Add-Button '&All tasks' 70 326 94 30
-$viewLatestButton = Add-Button '&Follow latest' 174 326 104 30
-$viewPinnedButton = Add-Button '&Pinned' 288 326 82 30
-$pinButton = Add-Button 'Pi&n latest' 380 326 94 30
-$clearButton = Add-Button '&Start fresh' 484 326 100 30
-$miniButton = Add-Button '&Mini mode' 594 326 96 30
-$enterpriseButton = Add-Button '&Import my data' 700 326 126 30
-$controlCenterButton = Add-Button '&Control center' 836 326 138 30
+$viewAllButton = Add-Button '&All chats' 70 318 88 30
+$viewLatestButton = Add-Button '&Latest chat' 168 318 96 30
+$viewPinnedButton = Add-Button '&Pinned' 274 318 78 30
+$pinButton = Add-Button 'Pi&n latest' 362 318 88 30
+$miniButton = Add-Button '&Mini mode' 460 318 90 30
+$controlCenterButton = Add-Button '&Insights && settings' 560 318 132 30
+$detailsButton = Add-Button '&Technical details' 702 318 112 30
+$clearButton = Add-Button '&Start fresh' 824 318 96 30
+$notificationToggleButton = Add-Button 'Alerts: On' 930 318 96 30
+$enterpriseButton = Add-Button 'Import &activity' 890 353 118 30
 
-$presetLabel = Add-Label 'RANGE' 26 365 42 24 8
+$presetLabel = Add-Label 'RANGE' 26 357 42 24 8
 $presetLabel.Font = New-UiFont 8 ([System.Drawing.FontStyle]::Bold)
 $presetLabel.ForeColor = $uiTextMuted
 $presetBox = New-Object System.Windows.Forms.ComboBox
-$presetBox.Location = New-Object System.Drawing.Point(70, 362)
+$presetBox.Location = New-Object System.Drawing.Point(70, 354)
 $presetBox.Size = New-Object System.Drawing.Size(130, 28)
 $presetBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $presetBox.Font = New-UiFont 9
@@ -2259,18 +2442,18 @@ $presetBox.ForeColor = $uiText
 [void]$presetBox.Items.AddRange(@('Today', 'Last 7 days', 'Last 30 days', 'All available', 'Custom'))
 $presetBox.SelectedItem = 'Custom'
 $form.Controls.Add($presetBox)
-$fromLabel = Add-Label 'From' 214 365 38 24 9
-$fromPicker = Add-DatePicker -Value $script:rangeStart.Date -X 254 -Y 362 -Width 112
-$toLabel = Add-Label 'To' 378 365 20 24 9
+$fromLabel = Add-Label 'From' 214 357 38 24 9
+$fromPicker = Add-DatePicker -Value $script:rangeStart.Date -X 254 -Y 354 -Width 112
+$toLabel = Add-Label 'To' 378 357 20 24 9
 $initialToDate = if ($script:rangeEnd -eq [datetime]::MaxValue) { (Get-Date).Date } else { $script:rangeEnd.Date }
-$toPicker = Add-DatePicker -Value $initialToDate -X 402 -Y 362 -Width 112
-$loadRangeButton = Add-Button 'Load &dates' 526 361 100 30
-$exportButton = Add-Button 'E&xport CSV' 636 361 100 30
-$refreshIntervalLabel = Add-Label 'Refresh s' 750 365 58 24 8
+$toPicker = Add-DatePicker -Value $initialToDate -X 402 -Y 354 -Width 112
+$loadRangeButton = Add-Button 'Load &dates' 526 353 100 30
+$exportButton = Add-Button 'E&xport CSV' 636 353 100 30
+$refreshIntervalLabel = Add-Label 'Refresh s' 750 357 58 24 8
 $refreshIntervalLabel.Font = New-UiFont 8 ([System.Drawing.FontStyle]::Bold)
 $refreshIntervalLabel.ForeColor = $uiTextMuted
 $refreshSecondsBox = New-Object System.Windows.Forms.NumericUpDown
-$refreshSecondsBox.Location = New-Object System.Drawing.Point(812, 361)
+$refreshSecondsBox.Location = New-Object System.Drawing.Point(812, 353)
 $refreshSecondsBox.Size = New-Object System.Drawing.Size(64, 30)
 $refreshSecondsBox.Minimum = 1
 $refreshSecondsBox.Maximum = 60
@@ -2282,10 +2465,12 @@ $refreshSecondsBox.BackColor = $uiSurfaceRaised
 $refreshSecondsBox.ForeColor = $uiText
 $refreshSecondsBox.TextAlign = [System.Windows.Forms.HorizontalAlignment]::Center
 $form.Controls.Add($refreshSecondsBox)
-$historyLabel = Add-Label ("Loaded: {0}" -f (Format-DateRange)) 886 365 394 24 9
+$historyLabel = Add-Label ("Loaded: {0}" -f (Format-DateRange)) 1004 357 276 24 9
 $historyLabel.ForeColor = $uiTextMuted
+$historyLabel.Visible = $false
 foreach ($surfaceLabel in @(
-    $title, $localLabel, $statusLabel, $freshLabel, $guidanceLabel,
+    $title, $localLabel, $currentChatCaption, $currentChatLabel, $currentChatMetaLabel,
+    $statusLabel, $sourceCoverageTitle, $sourceCoverageLabel, $freshLabel, $guidanceLabel,
     $minuteLabel, $windowLabel, $quotaLabel, $modelSummaryLabel, $timeSummaryLabel,
     $noteLabel, $sessionSummaryLabel, $integrationSummaryLabel,
     $modeLabel, $presetLabel, $fromLabel, $toLabel, $refreshIntervalLabel, $historyLabel
@@ -2293,13 +2478,49 @@ foreach ($surfaceLabel in @(
     $surfaceLabel.BackColor = $uiSurface
 }
 
-$tokenLabel = Add-Label 'Token events' 18 408 820 24 11
+$taskLabel = Add-Label 'Chats using tokens' 18 408 1270 24 11
+$taskLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
+$taskLabel.ForeColor = $uiText
+
+$taskGrid = New-Object System.Windows.Forms.DataGridView
+$taskGrid.Location = New-Object System.Drawing.Point(18, 436)
+$taskGrid.Size = New-Object System.Drawing.Size(1270, 188)
+$taskGrid.Anchor = 'Top,Left,Right'
+$taskGrid.ReadOnly = $true
+$taskGrid.AllowUserToAddRows = $false
+$taskGrid.AllowUserToDeleteRows = $false
+$taskGrid.AutoSizeColumnsMode = 'Fill'
+$taskGrid.RowHeadersVisible = $false
+foreach ($name in @('Chat','Source','Model','Last active','Fresh / turn','Context / turn','Cache','Health')) {
+    [void]$taskGrid.Columns.Add($name, $name)
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ReportJsonPath)) {
+    $reportEvents = @(Get-DisplayEvents -Mode 'All sessions')
+    $report = New-PrivacySafeUsageReport -UsageEvents $reportEvents -GroupBy $ReportGroupBy -TimeZoneId $script:reportingTimeZone
+    [void](Export-PrivacySafeUsageReport -Report $report -Path $ReportJsonPath)
+    Write-Output ('PrivacySafeReport={0}; GroupBy={1}; Rows={2}; TimeZone={3}' -f $ReportJsonPath, $ReportGroupBy, $report.Rows.Count, $report.TimeZoneId)
+    exit 0
+}
+
+$taskGrid.Columns['Chat'].FillWeight = 330
+$taskGrid.Columns['Source'].FillWeight = 105
+$taskGrid.Columns['Model'].FillWeight = 110
+$taskGrid.Columns['Last active'].FillWeight = 90
+$taskGrid.Columns['Fresh / turn'].FillWeight = 90
+$taskGrid.Columns['Context / turn'].FillWeight = 100
+$taskGrid.Columns['Cache'].FillWeight = 70
+$taskGrid.Columns['Health'].FillWeight = 90
+Set-GridTheme $taskGrid
+$form.Controls.Add($taskGrid)
+
+$tokenLabel = Add-Label 'Recent turns' 18 642 1270 24 11
 $tokenLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
 $tokenLabel.ForeColor = $uiText
 $grid = New-Object System.Windows.Forms.DataGridView
-$grid.Location = New-Object System.Drawing.Point(18, 436)
-$grid.Size = New-Object System.Drawing.Size(815, 290)
-$grid.Anchor = 'Top,Bottom,Left'
+$grid.Location = New-Object System.Drawing.Point(18, 670)
+$grid.Size = New-Object System.Drawing.Size(1270, 220)
+$grid.Anchor = 'Top,Left,Right'
 $grid.ReadOnly = $true
 $grid.AllowUserToAddRows = $false
 $grid.AllowUserToDeleteRows = $false
@@ -2313,57 +2534,26 @@ $grid.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::White
 $grid.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
 $grid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Gainsboro
 $grid.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(0, 90, 120)
-foreach ($name in @('Time','Fresh','New input','Output','Reasoning','Context','Cached','Risk','Task')) {
+foreach ($name in @('Time','Chat','Source','Fresh','New input','Output','Reasoning','Context','Cached','Health')) {
     [void]$grid.Columns.Add($name, $name)
 }
+$grid.Columns['Chat'].FillWeight = 280
+$grid.Columns['Source'].FillWeight = 105
 $grid.Columns['Fresh'].FillWeight = 80
-$grid.Columns['Risk'].FillWeight = 140
-$grid.Columns['Task'].FillWeight = 260
+$grid.Columns['Health'].FillWeight = 120
 Set-GridTheme $grid
 $form.Controls.Add($grid)
 
-$taskLabel = Add-Label 'Task breakdown: double-click a task to pin it' 850 408 438 24 11
-$taskLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
-$taskLabel.ForeColor = $uiText
+$detailLabel = Add-Label 'What this means' 18 908 1270 24 11
+$detailLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
+$detailLabel.ForeColor = $uiText
 
-$taskGrid = New-Object System.Windows.Forms.DataGridView
-$taskGrid.Location = New-Object System.Drawing.Point(850, 436)
-$taskGrid.Size = New-Object System.Drawing.Size(438, 290)
-$taskGrid.Anchor = 'Top,Bottom,Right'
-$taskGrid.ReadOnly = $true
-$taskGrid.AllowUserToAddRows = $false
-$taskGrid.AllowUserToDeleteRows = $false
-$taskGrid.AutoSizeColumnsMode = 'Fill'
-$taskGrid.RowHeadersVisible = $false
-$taskGrid.BackgroundColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-$taskGrid.GridColor = [System.Drawing.Color]::FromArgb(65, 65, 65)
-$taskGrid.EnableHeadersVisualStyles = $false
-$taskGrid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(45, 45, 48)
-$taskGrid.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::White
-$taskGrid.DefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
-$taskGrid.DefaultCellStyle.ForeColor = [System.Drawing.Color]::Gainsboro
-$taskGrid.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::FromArgb(0, 90, 120)
-foreach ($name in @('Task','Model','Health','Avg fresh','Avg ctx','Cache','Status')) {
-    [void]$taskGrid.Columns.Add($name, $name)
-}
-$taskGrid.Columns['Task'].FillWeight = 220
-$taskGrid.Columns['Model'].FillWeight = 95
-$taskGrid.Columns['Health'].FillWeight = 95
-$taskGrid.Columns['Avg fresh'].FillWeight = 80
-$taskGrid.Columns['Avg ctx'].FillWeight = 80
-$taskGrid.Columns['Cache'].FillWeight = 70
-$taskGrid.Columns['Status'].FillWeight = 80
-Set-GridTheme $taskGrid
-$taskGrid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(2, 1, 2, 1)
-$taskGrid.ColumnHeadersDefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(2, 0, 2, 0)
-$form.Controls.Add($taskGrid)
-
-$integrationLabel = Add-Label 'Integrations/add-ins/plugins: waiting for calls' 18 650 620 24 11
+$integrationLabel = Add-Label 'Integrations/add-ins/plugins: waiting for calls' 18 1022 620 24 11
 $integrationLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
 $integrationLabel.ForeColor = $uiText
 
 $integrationGrid = New-Object System.Windows.Forms.DataGridView
-$integrationGrid.Location = New-Object System.Drawing.Point(18, 678)
+$integrationGrid.Location = New-Object System.Drawing.Point(18, 1050)
 $integrationGrid.Size = New-Object System.Drawing.Size(620, 140)
 $integrationGrid.Anchor = 'Bottom,Left'
 $integrationGrid.ReadOnly = $true
@@ -2387,12 +2577,12 @@ $integrationGrid.Columns['Kind'].FillWeight = 85
 Set-GridTheme $integrationGrid
 $form.Controls.Add($integrationGrid)
 
-$activityLabel = Add-Label 'Sanitized activity: waiting for rollout events' 660 650 628 24 11
+$activityLabel = Add-Label 'Sanitized activity: waiting for rollout events' 660 1022 628 24 11
 $activityLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
 $activityLabel.ForeColor = $uiText
 
 $activityGrid = New-Object System.Windows.Forms.DataGridView
-$activityGrid.Location = New-Object System.Drawing.Point(660, 678)
+$activityGrid.Location = New-Object System.Drawing.Point(660, 1050)
 $activityGrid.Size = New-Object System.Drawing.Size(628, 140)
 $activityGrid.Anchor = 'Bottom,Left,Right'
 $activityGrid.ReadOnly = $true
@@ -2418,7 +2608,7 @@ Set-GridTheme $activityGrid
 $form.Controls.Add($activityGrid)
 
 $explainBox = New-Object System.Windows.Forms.TextBox
-$explainBox.Location = New-Object System.Drawing.Point(18, 830)
+$explainBox.Location = New-Object System.Drawing.Point(18, 936)
 $explainBox.Size = New-Object System.Drawing.Size(1270, 80)
 $explainBox.Anchor = 'Bottom,Left,Right'
 $explainBox.Multiline = $true
@@ -2431,6 +2621,11 @@ $explainBox.Text = 'Select a row to explain the spike profile.'
 $explainBox.AccessibleName = 'Selected item explanation'
 $explainBox.AccessibleDescription = 'Plain-language explanation of the selected usage event, task, or integration.'
 $form.Controls.Add($explainBox)
+
+$script:showDiagnostics = $false
+foreach ($diagnosticControl in @($integrationLabel, $integrationGrid, $activityLabel, $activityGrid)) {
+    $diagnosticControl.Visible = $false
+}
 
 # WinForms places the first controls added at the front of the native z-order.
 # These three panels are visual backgrounds, not parents, so they must remain
@@ -2453,18 +2648,20 @@ $script:interactionTestMode = [bool]$UiInteractionSmokeTest
 $script:interactionExportPath = ''
 $script:lastInteractionResult = ''
 $script:fullModeControls = @(
-    $localLabel, $summaryCard, $commandCard,
-    $modelSummaryLabel, $timeSummaryLabel, $noteLabel, $sessionSummaryLabel, $integrationSummaryLabel,
-    $modeLabel, $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $clearButton,
+    $localLabel, $currentChatCaption, $currentChatMetaLabel, $sourceCoverageTitle, $sourceCoverageLabel,
+    $summaryCard, $commandCard,
+    $timeSummaryLabel,
+    $modeLabel, $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $clearButton, $notificationToggleButton,
+    $detailsButton,
     $enterpriseButton, $controlCenterButton, $presetLabel, $presetBox, $fromLabel, $fromPicker, $toLabel, $toPicker, $loadRangeButton, $exportButton,
-    $refreshIntervalLabel, $refreshSecondsBox, $historyLabel, $tokenLabel, $grid, $taskLabel, $taskGrid,
-    $integrationLabel, $integrationGrid, $activityLabel, $activityGrid, $explainBox
+    $refreshIntervalLabel, $refreshSecondsBox, $tokenLabel, $grid, $taskLabel, $taskGrid,
+    $detailLabel, $integrationLabel, $integrationGrid, $activityLabel, $activityGrid, $explainBox
 )
 
 $grid.AccessibleName = 'Token events table'
 $grid.AccessibleDescription = 'Privacy-safe aggregate token metrics by completed turn. Select a row for an explanation.'
-$taskGrid.AccessibleName = 'Task breakdown table'
-$taskGrid.AccessibleDescription = 'Aggregate usage health by private task label. Double-click a row to pin that task.'
+$taskGrid.AccessibleName = 'Chats using tokens table'
+$taskGrid.AccessibleDescription = 'Aggregate usage by actual local Codex chat title. Double-click a row to focus that chat.'
 $integrationGrid.AccessibleName = 'Integration activity table'
 $integrationGrid.AccessibleDescription = 'Aggregate counts of integration types without arguments, output, or paths.'
 $activityGrid.AccessibleName = 'Sanitized activity table'
@@ -2485,6 +2682,8 @@ $enterpriseButton.AccessibleName = 'Import my local ChatGPT data'
 $enterpriseButton.AccessibleDescription = 'Open a downloaded usage summary or activity export limited to this individual.'
 $controlCenterButton.AccessibleName = 'Open insights and controls'
 $controlCenterButton.AccessibleDescription = 'Open offline trends, the usage saver, local RTK savings health, spending estimates, downloaded-report comparison, provenance, personal settings, and the opt-in usage guard.'
+$detailsButton.AccessibleName = 'Toggle technical details'
+$detailsButton.AccessibleDescription = 'Show or hide integration counts and sanitized activity types.'
 $miniButton.AccessibleName = 'Toggle compact monitor mode'
 $miniButton.AccessibleDescription = 'Switch between the full dashboard and the always-on-top compact status view.'
 $viewAllButton.AccessibleName = 'Show all tasks'
@@ -2497,6 +2696,8 @@ $pinButton.AccessibleName = 'Pin latest task'
 $pinButton.AccessibleDescription = 'Pin the session with the most recent completed turn.'
 $clearButton.AccessibleName = 'Start fresh monitoring window'
 $clearButton.AccessibleDescription = 'Clear aggregate events from memory and monitor only newly appended local log records.'
+$notificationToggleButton.AccessibleName = 'Toggle Windows usage alerts'
+$notificationToggleButton.AccessibleDescription = 'Turn Windows usage-alert notifications on or off immediately and save the preference for future launches.'
 
 $toolTip = New-Object System.Windows.Forms.ToolTip
 $toolTip.SetToolTip($presetBox, 'Choose a quick range. Custom keeps the calendar selections.')
@@ -2507,10 +2708,12 @@ $toolTip.SetToolTip($enterpriseButton, 'Import a downloaded report limited to yo
 $toolTip.SetToolTip($controlCenterButton, 'Open offline insights, the usage saver, RTK savings health, cost estimates, downloaded-report comparison, personal settings, and the opt-in usage guard.')
 $toolTip.SetToolTip($miniButton, 'Toggle the always-on-top compact view (Ctrl+M).')
 $toolTip.SetToolTip($clearButton, 'Discard the in-memory window and watch only newly appended log records.')
+$toolTip.SetToolTip($notificationToggleButton, 'Turn Windows usage-alert notifications on or off. The choice is saved for future launches.')
 
 $tabOrder = @(
-    $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $clearButton, $miniButton,
-    $enterpriseButton, $controlCenterButton, $presetBox, $fromPicker, $toPicker, $loadRangeButton, $exportButton, $refreshSecondsBox,
+    $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $miniButton,
+    $controlCenterButton, $detailsButton, $clearButton, $notificationToggleButton,
+    $enterpriseButton, $presetBox, $fromPicker, $toPicker, $loadRangeButton, $exportButton, $refreshSecondsBox,
     $grid, $taskGrid, $integrationGrid, $activityGrid, $explainBox
 )
 for ($tabIndex = 0; $tabIndex -lt $tabOrder.Count; $tabIndex++) {
@@ -2525,16 +2728,27 @@ function Update-ViewButtons {
     }
     if ($script:viewMode -eq 'All sessions') {
         $viewAllButton.BackColor = $uiAccentDark
+        $viewAllButton.ForeColor = $uiOnAccent
         $viewAllButton.FlatAppearance.BorderColor = $uiAccent
     }
     elseif ($script:viewMode -eq 'Follow latest') {
         $viewLatestButton.BackColor = $uiAccentDark
+        $viewLatestButton.ForeColor = $uiOnAccent
         $viewLatestButton.FlatAppearance.BorderColor = $uiAccent
     }
     elseif ($script:viewMode -eq 'Pinned session') {
         $viewPinnedButton.BackColor = $uiAccentDark
+        $viewPinnedButton.ForeColor = $uiOnAccent
         $viewPinnedButton.FlatAppearance.BorderColor = $uiAccent
     }
+}
+
+function Update-WindowsNotificationToggle {
+    $enabled = Test-MonitorNotificationsEnabled
+    $notificationToggleButton.Text = if ($enabled) { 'Alerts: On' } else { 'Alerts: Off' }
+    $notificationToggleButton.BackColor = if ($enabled) { $uiAccentDark } else { $uiSurfaceRaised }
+    $notificationToggleButton.ForeColor = if ($enabled) { $uiOnAccent } else { $uiText }
+    $notificationToggleButton.FlatAppearance.BorderColor = if ($enabled) { $uiAccent } else { $uiBorder }
 }
 
 function Set-ViewMode {
@@ -2547,91 +2761,77 @@ function Set-ViewMode {
 }
 
 Update-ViewButtons
+Update-WindowsNotificationToggle
 
 function Update-ResponsiveLayout {
     if ($script:isMiniMode) { return }
 
     $margin = 18
-    $gap = 16
     $clientW = [Math]::Max(1000, $form.ClientSize.Width)
-    # A 900px virtual canvas keeps the dashboard sections separated on common
-    # 1280x720 and 1366x768 work laptops. AutoScroll exposes the lower sections
-    # without allowing the 160px token grid to overlap their headings.
-    $clientH = [Math]::Max(900, $form.ClientSize.Height)
-    $form.AutoScrollMinSize = New-Object System.Drawing.Size(1000, 900)
     $contentW = $clientW - ($margin * 2)
-    $rightW = [Math]::Max(360, [Math]::Min(620, [int]($contentW * 0.38)))
-    $leftW = [Math]::Max(500, $contentW - $gap - $rightW)
-    $rightX = $margin + $leftW + $gap
     $statusW = [Math]::Max(320, [Math]::Min(470, [int]($contentW * 0.38)))
     $statusX = $margin + $contentW - $statusW - 8
-    $summaryLeftW = [Math]::Max(520, [int]($contentW * 0.58))
-    $summaryRightX = $margin + $summaryLeftW + 20
-    $summaryRightW = [Math]::Max(300, $contentW - $summaryLeftW - 28)
+    $summaryLeftW = [Math]::Max(440, [int](($contentW - 24) / 2))
+    $summaryRightX = $margin + $summaryLeftW + 24
+    $summaryRightW = [Math]::Max(360, $contentW - $summaryLeftW - 24)
+    $virtualHeight = if ($script:showDiagnostics) { 1220 } else { 1036 }
+    $form.AutoScrollMinSize = New-Object System.Drawing.Size(1000, $virtualHeight)
 
-    # The three upper surfaces preserve reading order while growing with the window.
-    $heroCard.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW + 12), 142)
-    $summaryCard.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW + 12), 142)
-    $commandCard.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW + 12), 78)
+    $heroCard.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW + 12), 184)
+    $summaryCard.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW + 12), 92)
+    $commandCard.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW + 12), 82)
     $title.Size = New-Object System.Drawing.Size([Math]::Max(360, $statusX - 50), 34)
     $localLabel.Size = New-Object System.Drawing.Size([Math]::Max(360, $statusX - 50), 18)
+    $currentChatCaption.Size = New-Object System.Drawing.Size([Math]::Max(360, $statusX - 50), 18)
+    $currentChatLabel.Size = New-Object System.Drawing.Size([Math]::Max(360, $statusX - 50), 30)
+    $currentChatMetaLabel.Size = New-Object System.Drawing.Size([Math]::Max(360, $statusX - 50), 20)
     $statusLabel.Location = New-Object System.Drawing.Point($statusX, 26)
     $statusLabel.Size = New-Object System.Drawing.Size($statusW, 28)
     $statusMeter.Location = New-Object System.Drawing.Point($statusX, 60)
     $statusMeter.Size = New-Object System.Drawing.Size($statusW, 8)
+    $sourceCoverageTitle.Location = New-Object System.Drawing.Point($statusX, 78)
+    $sourceCoverageTitle.Size = New-Object System.Drawing.Size($statusW, 18)
+    $sourceCoverageLabel.Location = New-Object System.Drawing.Point($statusX, 96)
+    $sourceCoverageLabel.Size = New-Object System.Drawing.Size($statusW, 52)
     $freshLabel.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW - 16), 28)
     $guidanceLabel.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW - 16), 24)
-    $minuteLabel.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW - 16), 24)
-    foreach ($pair in @(
-        @($windowLabel, 204), @($modelSummaryLabel, 228), @($sessionSummaryLabel, 252)
-    )) {
-        $pair[0].Location = New-Object System.Drawing.Point(26, $pair[1])
-        $pair[0].Size = New-Object System.Drawing.Size($summaryLeftW, 21)
-    }
-    foreach ($pair in @(
-        @($quotaLabel, 204), @($timeSummaryLabel, 228), @($integrationSummaryLabel, 252)
-    )) {
-        $pair[0].Location = New-Object System.Drawing.Point($summaryRightX, $pair[1])
-        $pair[0].Size = New-Object System.Drawing.Size($summaryRightW, 21)
-    }
-    $noteLabel.Size = New-Object System.Drawing.Size([Math]::Max(1, $contentW - 16), 20)
-    $historyLabel.Location = New-Object System.Drawing.Point(886, 365)
-    $historyLabel.Size = New-Object System.Drawing.Size([Math]::Max(100, $contentW - 868), 24)
+    $minuteLabel.Size = New-Object System.Drawing.Size($summaryLeftW, 24)
+    $windowLabel.Size = New-Object System.Drawing.Size($summaryLeftW, 21)
+    $timeSummaryLabel.Location = New-Object System.Drawing.Point($summaryRightX, 216)
+    $timeSummaryLabel.Size = New-Object System.Drawing.Size($summaryRightW, 24)
+    $quotaLabel.Location = New-Object System.Drawing.Point($summaryRightX, 242)
+    $quotaLabel.Size = New-Object System.Drawing.Size($summaryRightW, 21)
+    $historyLabel.Location = New-Object System.Drawing.Point(1004, 357)
+    $historyLabel.Size = New-Object System.Drawing.Size([Math]::Max(120, $contentW - 986), 24)
 
-    $explainH = 80
-    $explainY = $clientH - $explainH - 22
-    $activityH = 140
-    $activityY = $explainY - $activityH - 12
-    $activityLabelY = $activityY - 28
-    $gridY = 436
-    $gridH = [Math]::Max(160, $activityLabelY - $gridY - 10)
-    $lowerGap = 16
-    $integrationW = [Math]::Max(420, [int](($contentW - $lowerGap) * 0.36))
-    $activityW = $contentW - $lowerGap - $integrationW
-    $activityX = $margin + $integrationW + $lowerGap
+    $tokenLabel.Location = New-Object System.Drawing.Point($margin, 642)
+    $tokenLabel.Size = New-Object System.Drawing.Size($contentW, 24)
+    $grid.Location = New-Object System.Drawing.Point($margin, 670)
+    $grid.Size = New-Object System.Drawing.Size($contentW, 220)
 
-    $tokenLabel.Location = New-Object System.Drawing.Point($margin, 408)
-    $tokenLabel.Size = New-Object System.Drawing.Size($leftW, 24)
-    $grid.Location = New-Object System.Drawing.Point($margin, $gridY)
-    $grid.Size = New-Object System.Drawing.Size($leftW, $gridH)
+    $taskLabel.Location = New-Object System.Drawing.Point($margin, 408)
+    $taskLabel.Size = New-Object System.Drawing.Size($contentW, 24)
+    $taskGrid.Location = New-Object System.Drawing.Point($margin, 436)
+    $taskGrid.Size = New-Object System.Drawing.Size($contentW, 188)
 
-    $taskLabel.Location = New-Object System.Drawing.Point($rightX, 408)
-    $taskLabel.Size = New-Object System.Drawing.Size($rightW, 24)
-    $taskGrid.Location = New-Object System.Drawing.Point($rightX, $gridY)
-    $taskGrid.Size = New-Object System.Drawing.Size($rightW, $gridH)
+    $detailLabel.Location = New-Object System.Drawing.Point($margin, 908)
+    $detailLabel.Size = New-Object System.Drawing.Size($contentW, 24)
+    $explainBox.Location = New-Object System.Drawing.Point($margin, 936)
+    $explainBox.Size = New-Object System.Drawing.Size($contentW, 80)
 
-    $integrationLabel.Location = New-Object System.Drawing.Point($margin, $activityLabelY)
+    $diagnosticGap = 16
+    $integrationW = [Math]::Max(420, [int](($contentW - $diagnosticGap) * 0.42))
+    $activityW = $contentW - $diagnosticGap - $integrationW
+    $activityX = $margin + $integrationW + $diagnosticGap
+    $integrationLabel.Location = New-Object System.Drawing.Point($margin, 1022)
     $integrationLabel.Size = New-Object System.Drawing.Size($integrationW, 24)
-    $integrationGrid.Location = New-Object System.Drawing.Point($margin, $activityY)
-    $integrationGrid.Size = New-Object System.Drawing.Size($integrationW, $activityH)
+    $integrationGrid.Location = New-Object System.Drawing.Point($margin, 1050)
+    $integrationGrid.Size = New-Object System.Drawing.Size($integrationW, 140)
 
-    $activityLabel.Location = New-Object System.Drawing.Point($activityX, $activityLabelY)
+    $activityLabel.Location = New-Object System.Drawing.Point($activityX, 1022)
     $activityLabel.Size = New-Object System.Drawing.Size($activityW, 24)
-    $activityGrid.Location = New-Object System.Drawing.Point($activityX, $activityY)
-    $activityGrid.Size = New-Object System.Drawing.Size($activityW, $activityH)
-
-    $explainBox.Location = New-Object System.Drawing.Point($margin, $explainY)
-    $explainBox.Size = New-Object System.Drawing.Size($contentW, $explainH)
+    $activityGrid.Location = New-Object System.Drawing.Point($activityX, 1050)
+    $activityGrid.Size = New-Object System.Drawing.Size($activityW, 140)
 
     # Resizing and mini/full transitions must not promote a background surface
     # over its foreground controls.
@@ -2654,10 +2854,10 @@ function Set-MiniMode {
     }
     if ($Enabled) {
         $form.TopMost = $true
-        $form.MinimumSize = New-Object System.Drawing.Size(680, 320)
-        $form.Size = New-Object System.Drawing.Size(780, 340)
+        $form.MinimumSize = New-Object System.Drawing.Size(680, 350)
+        $form.Size = New-Object System.Drawing.Size(780, 370)
         $heroCard.Location = New-Object System.Drawing.Point(12, 12)
-        $heroCard.Size = New-Object System.Drawing.Size(748, 240)
+        $heroCard.Size = New-Object System.Drawing.Size(748, 270)
         $miniButton.Text = '&Full mode'
         $miniButton.Location = New-Object System.Drawing.Point(650, 10)
         $miniButton.Size = New-Object System.Drawing.Size(100, 30)
@@ -2669,19 +2869,22 @@ function Set-MiniMode {
         $statusLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
         $statusMeter.Location = New-Object System.Drawing.Point(26, 56)
         $statusMeter.Size = New-Object System.Drawing.Size(714, 8)
-        $title.Text = 'Codex usage - compact'
-        $freshLabel.Location = New-Object System.Drawing.Point(26, 78)
+        $title.Text = 'Codex usage'
+        $currentChatLabel.Location = New-Object System.Drawing.Point(26, 76)
+        $currentChatLabel.Size = New-Object System.Drawing.Size(714, 28)
+        $currentChatLabel.Font = New-UiFont 14 ([System.Drawing.FontStyle]::Bold)
+        $freshLabel.Location = New-Object System.Drawing.Point(26, 108)
         $freshLabel.Size = New-Object System.Drawing.Size(714, 26)
         $freshLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
-        $minuteLabel.Location = New-Object System.Drawing.Point(26, 108)
+        $minuteLabel.Location = New-Object System.Drawing.Point(26, 138)
         $minuteLabel.Size = New-Object System.Drawing.Size(714, 24)
         $minuteLabel.Font = New-UiFont 10
-        $quotaLabel.Location = New-Object System.Drawing.Point(26, 136)
+        $quotaLabel.Location = New-Object System.Drawing.Point(26, 166)
         $quotaLabel.Size = New-Object System.Drawing.Size(732, 22)
-        $guidanceLabel.Location = New-Object System.Drawing.Point(26, 164)
+        $guidanceLabel.Location = New-Object System.Drawing.Point(26, 194)
         $guidanceLabel.Size = New-Object System.Drawing.Size(714, 40)
         $guidanceLabel.Font = New-UiFont 10
-        $windowLabel.Location = New-Object System.Drawing.Point(26, 206)
+        $windowLabel.Location = New-Object System.Drawing.Point(26, 238)
         $windowLabel.Size = New-Object System.Drawing.Size(732, 22)
         $windowLabel.Font = New-UiFont 9
     }
@@ -2693,25 +2896,34 @@ function Set-MiniMode {
         $miniButton.Text = '&Mini mode'
         $miniButton.Location = $script:normalMiniButtonLocation
         $miniButton.Size = New-Object System.Drawing.Size(96, 30)
-        $title.Text = 'Live Codex usage'
-        $title.Location = New-Object System.Drawing.Point(26, 22)
-        $title.Font = New-UiFont 20 ([System.Drawing.FontStyle]::Bold)
+        $title.Text = 'Codex usage'
+        $title.Location = New-Object System.Drawing.Point(26, 20)
+        $title.Font = New-UiFont 18 ([System.Drawing.FontStyle]::Bold)
+        $currentChatLabel.Location = New-Object System.Drawing.Point(26, 94)
+        $currentChatLabel.Size = New-Object System.Drawing.Size(790, 30)
+        $currentChatLabel.Font = New-UiFont 16 ([System.Drawing.FontStyle]::Bold)
         $statusLabel.Font = New-UiFont 12 ([System.Drawing.FontStyle]::Bold)
-        $freshLabel.Location = New-Object System.Drawing.Point(26, 80)
+        $freshLabel.Location = New-Object System.Drawing.Point(26, 150)
         $freshLabel.Size = New-Object System.Drawing.Size(1254, 28)
-        $freshLabel.Font = New-UiFont 14 ([System.Drawing.FontStyle]::Bold)
-        $guidanceLabel.Location = New-Object System.Drawing.Point(26, 114)
+        $freshLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
+        $guidanceLabel.Location = New-Object System.Drawing.Point(26, 268)
         $guidanceLabel.Size = New-Object System.Drawing.Size(1254, 24)
-        $guidanceLabel.Font = New-UiFont 10
-        $minuteLabel.Location = New-Object System.Drawing.Point(26, 176)
-        $minuteLabel.Size = New-Object System.Drawing.Size(1254, 24)
-        $minuteLabel.Font = New-UiFont 11 ([System.Drawing.FontStyle]::Bold)
-        $windowLabel.Location = New-Object System.Drawing.Point(26, 204)
-        $windowLabel.Size = New-Object System.Drawing.Size(735, 21)
+        $guidanceLabel.Font = New-UiFont 9
+        $minuteLabel.Location = New-Object System.Drawing.Point(26, 216)
+        $minuteLabel.Size = New-Object System.Drawing.Size(610, 24)
+        $minuteLabel.Font = New-UiFont 10 ([System.Drawing.FontStyle]::Bold)
+        $windowLabel.Location = New-Object System.Drawing.Point(26, 242)
+        $windowLabel.Size = New-Object System.Drawing.Size(610, 21)
         $windowLabel.Font = New-UiFont 9
-        $quotaLabel.Location = New-Object System.Drawing.Point(782, 204)
-        $quotaLabel.Size = New-Object System.Drawing.Size(498, 21)
+        $quotaLabel.Location = New-Object System.Drawing.Point(660, 242)
+        $quotaLabel.Size = New-Object System.Drawing.Size(620, 21)
         $quotaLabel.Font = New-UiFont 9
+        foreach ($diagnosticControl in @($integrationLabel, $integrationGrid, $activityLabel, $activityGrid)) {
+            $diagnosticControl.Visible = $script:showDiagnostics
+        }
+        foreach ($hiddenSummaryControl in @($modelSummaryLabel, $noteLabel, $sessionSummaryLabel, $integrationSummaryLabel, $historyLabel)) {
+            $hiddenSummaryControl.Visible = $false
+        }
         Update-ResponsiveLayout
     }
 }
@@ -2824,14 +3036,26 @@ function Refresh-Display {
     }
 
     if ($null -eq $latest) {
-        $freshLabel.Text = 'Fresh burn: waiting for token events'
+        $currentChatLabel.Text = 'Waiting for a completed Codex turn'
+        $currentChatMetaLabel.Text = 'No active chat detected yet'
+        $sourceCoverageLabel.Text = "Codex (local) - waiting for live token events`r`nChatGPT desktop/web/mobile, Excel, Sheets, PowerPoint - import activity`r`nOpenAI API - separate usage dashboard"
+        $freshLabel.Text = 'Latest turn: waiting for token events'
         $freshLabel.ForeColor = $uiSuccess
     }
     else {
         $latestTask = @($tasks | Where-Object { $_.Session -eq $latest.Session } | Select-Object -First 1)
         $avgFreshText = if ($latestTask.Count -gt 0) { Format-Tokens $latestTask[0].AvgFresh } else { 'n/a' }
         $modelText = if ($latestTask.Count -gt 0 -and $latestTask[0].Model) { $latestTask[0].Model } else { 'unknown model' }
-        $freshLabel.Text = 'Latest {0}: fresh {1} | task avg {2}/turn | new input {3} | output {4} | reasoning {5} | context {6} | {7} | {8}' -f $latest.At.ToString('HH:mm:ss'), (Format-Tokens $latest.FreshBurn), $avgFreshText, (Format-Tokens $latest.NewInput), (Format-Tokens $latest.Output), (Format-Tokens $latest.Reasoning), (Format-Tokens $latest.Total), $latest.Risk, $modelText
+        $taskTitle = if ($latestTask.Count -gt 0) { $latestTask[0].Task } else { Get-FriendlyTaskLabel -Path $latest.Source }
+        $taskStatus = if ($latestTask.Count -gt 0) { $latestTask[0].Status } else { 'Latest' }
+        $surfaceText = if ($latest.PSObject.Properties['Surface'] -and $latest.Surface) { [string]$latest.Surface } else { 'Codex (local)' }
+        $currentChatLabel.Text = $taskTitle
+        $currentChatMetaLabel.Text = 'Source: {0}  |  {1}  |  {2}  |  {3}  |  average {4} fresh tokens per turn' -f `
+            $surfaceText, $latest.At.ToString('h:mm:ss tt'), $modelText, $taskStatus, $avgFreshText
+        $sourceCoverageLabel.Text = "{0} - live tokens from local logs`r`nChatGPT desktop/web/mobile, Excel, Sheets, PowerPoint - import activity`r`nOpenAI API - separate usage dashboard" -f $surfaceText
+        $freshLabel.Text = 'Latest turn: {0} fresh tokens  |  {1} new + {2} output  |  {3} context  |  {4}' -f `
+            (Format-Tokens $latest.FreshBurn), (Format-Tokens $latest.NewInput),
+            (Format-Tokens $latest.Output), (Format-Tokens $latest.Total), $latest.Risk
         if ($latest.Risk -eq 'Normal' -or $latest.Risk -eq 'Mostly cached context') {
             $freshLabel.ForeColor = $uiSuccess
         }
@@ -2843,7 +3067,8 @@ function Refresh-Display {
         }
     }
 
-    $minuteLabel.Text = 'Last 60 seconds - fresh {0} | new input {1} | output {2} | reasoning {3} | context {4} | cached {5}' -f (Format-Tokens $minute.FreshBurn), (Format-Tokens $minute.NewInput), (Format-Tokens $minute.Output), (Format-Tokens $minute.Reasoning), (Format-Tokens $minute.Total), (Format-Tokens $minute.Cached)
+    $minuteLabel.Text = 'Last minute: {0} fresh tokens  |  {1} new  |  {2} output' -f `
+        (Format-Tokens $minute.FreshBurn), (Format-Tokens $minute.NewInput), (Format-Tokens $minute.Output)
     if ($minute.FreshBurn -ge $WarnMinuteFreshTokens) {
         $minuteLabel.ForeColor = $uiCritical
     }
@@ -2860,7 +3085,9 @@ function Refresh-Display {
     else {
         $guidanceLabel.ForeColor = $uiTextSecondary
     }
-    $windowLabel.Text = 'Monitor window - events: {0} | fresh {1} | context {2} | sessions {3} | logs {4}/{5} | started {6}' -f $visible.Count, (Format-Tokens $window.FreshBurn), (Format-Tokens $window.Total), (@($visible | Select-Object -ExpandProperty Source -Unique).Count), $script:scanStats.LoadedFiles, $script:scanStats.AvailableFiles, $script:startedAt.ToString('HH:mm:ss')
+    $windowLabel.Text = 'Selected range: {0} fresh tokens  |  {1} turns  |  {2} chats' -f `
+        (Format-Tokens $window.FreshBurn), $visible.Count,
+        (@($visible | Select-Object -ExpandProperty Source -Unique).Count)
     $quotaLabel.Text = Get-QuotaText -UsageEvent $latest
     $modelSummaryLabel.Text = Get-ModelBreakdownText -VisibleEvents $visible
     $timeSummaryLabel.Text = Get-TimeSummaryText -VisibleEvents $visible
@@ -2915,14 +3142,15 @@ function Refresh-Display {
     foreach ($usageEvent in $visible | Select-Object -First 100) {
         $rowIndex = $grid.Rows.Add(
             $usageEvent.At.ToString('HH:mm:ss'),
+            (Get-FriendlyTaskLabel -Path $usageEvent.Source),
+            $(if ($usageEvent.PSObject.Properties['Surface']) { [string]$usageEvent.Surface } else { 'Codex (local)' }),
             (Format-Tokens $usageEvent.FreshBurn),
             (Format-Tokens $usageEvent.NewInput),
             (Format-Tokens $usageEvent.Output),
             (Format-Tokens $usageEvent.Reasoning),
             (Format-Tokens $usageEvent.Total),
             (Format-Tokens $usageEvent.Cached),
-            $usageEvent.Risk,
-            (Get-FriendlyTaskLabel -Path $usageEvent.Source)
+            $usageEvent.Risk
         )
         $row = $grid.Rows[$rowIndex]
         $row.Tag = $usageEvent
@@ -2940,18 +3168,19 @@ function Refresh-Display {
         try { $grid.FirstDisplayedScrollingRowIndex = $focusedGridRow } catch { }
     }
 
-    $taskLabel.Text = 'Task breakdown - {0} visible task(s). Double-click a row to pin that task.' -f $tasks.Count
+    $taskLabel.Text = 'Chats using tokens  -  {0} visible. Double-click a chat to focus it.' -f $tasks.Count
     $taskGrid.Rows.Clear()
     $focusedTaskRow = -1
     foreach ($task in $tasks | Select-Object -First 30) {
         $rowIndex = $taskGrid.Rows.Add(
             $task.Task,
+            $(if ($task.Surface) { $task.Surface } else { 'Codex (local)' }),
             $(if ($task.Model) { $task.Model } else { 'unknown' }),
-            $task.Health,
+            $task.LatestAt.ToString('h:mm tt'),
             (Format-Tokens $task.AvgFresh),
             (Format-Tokens $task.AvgContext),
             ('{0}%' -f $task.CacheRatio),
-            $task.Status
+            $task.Health
         )
         $row = $taskGrid.Rows[$rowIndex]
         $row.Tag = $task
@@ -3007,7 +3236,7 @@ function Refresh-Display {
             $item.At.ToString('HH:mm:ss'),
             $item.Label,
             $item.Detail,
-            (Get-ShortSessionName -Path $item.Source)
+            (Get-FriendlyTaskLabel -Path $item.Source)
         )
         $row = $activityGrid.Rows[$rowIndex]
         if ($item.Label -eq 'ERR') {
@@ -3575,7 +3804,7 @@ function Show-ControlCenterDialog {
         $button.FlatStyle = 'Flat'
         $button.UseVisualStyleBackColor = $false
         $button.FlatAppearance.BorderColor = $uiBorder
-        $button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(44, 51, 60)
+        $button.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(225, 236, 247)
         $button.Cursor = [System.Windows.Forms.Cursors]::Hand
         $button.Font = New-UiFont 9
         $Parent.Controls.Add($button)
@@ -4505,6 +4734,180 @@ function Show-ControlCenterDialog {
     })
     Refresh-ReconciliationGrid
 
+    # Official dashboard checkpoints: aggregate values manually observed in the signed-in Codex analytics view.
+    $dashboardHistoryTab = New-ControlCenterTab 'Official history'
+    [void](Add-ControlCenterLabel -Parent $dashboardHistoryTab `
+        -Text 'Official Codex dashboard checkpoints' -X 14 -Y 14 -Width 1008 -Height 26 -Size 11 -Color $uiText -Style ([System.Drawing.FontStyle]::Bold))
+    [void](Add-ControlCenterLabel -Parent $dashboardHistoryTab `
+        -Text 'Record only aggregates visible in your signed-in Codex analytics dashboard. The monitor does not store browser credentials or call an account endpoint; locally recorded turns and plugin calls are compared only for the same period.' `
+        -X 14 -Y 44 -Width 1008 -Height 42 -Size 9 -Color $uiTextMuted)
+    $recordDashboardButton = Add-ControlCenterButton -Parent $dashboardHistoryTab -Text '&Record dashboard snapshot' -X 14 -Y 94 -Width 194
+    $dashboardStatusLabel = Add-ControlCenterLabel -Parent $dashboardHistoryTab -Text 'No official dashboard checkpoints recorded.' `
+        -X 220 -Y 98 -Width 802 -Height 28 -Size 9 -Color $uiTextSecondary
+    $dashboardGridHost = New-Object System.Windows.Forms.Panel
+    $dashboardGridHost.Location = New-Object System.Drawing.Point(14, 138)
+    $dashboardGridHost.Size = New-Object System.Drawing.Size(1008, 430)
+    $dashboardGridHost.Anchor = 'Top,Bottom,Left,Right'
+    $dashboardHistoryTab.Controls.Add($dashboardGridHost)
+    $dashboardGrid = New-ControlCenterGrid -Parent $dashboardGridHost `
+        -Columns @('Observed','Period','Official turns','Local turns','Difference','Official plugins','Local plugins','Difference','Official-only','Status') `
+        -AccessibleName 'Official Codex dashboard checkpoint reconciliation history'
+    $dashboardGrid.AccessibleDescription = 'Aggregate-only official dashboard history compared with locally available Codex turns and plugin calls for the same date range.'
+    $dashboardGrid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
+    $dashboardWidths = @(126, 174, 95, 84, 78, 102, 92, 78, 96, 112)
+    for ($dashboardColumnIndex = 0; $dashboardColumnIndex -lt $dashboardWidths.Count; $dashboardColumnIndex++) {
+        $dashboardGrid.Columns[$dashboardColumnIndex].Width = $dashboardWidths[$dashboardColumnIndex]
+    }
+
+    function Format-OfficialDashboardCount {
+        param([object]$Value)
+        if ($null -eq $Value) { return '-' }
+        return ('{0:N0}' -f [Int64]$Value)
+    }
+
+    function Refresh-OfficialDashboardHistoryGrid {
+        $dashboardGrid.Rows.Clear()
+        $records = @(Get-OfficialDashboardReconciliation `
+            -UsageEvents @(Get-DisplayEvents -Mode 'All sessions') `
+            -IntegrationEvents @(Get-DisplayIntegrations -Mode 'All sessions') `
+            -History $script:officialDashboardHistory)
+        if ($records.Count -eq 0) {
+            $dashboardStatusLabel.Text = 'No official dashboard checkpoints recorded. Use Record dashboard snapshot after reviewing the signed-in official page.'
+            $dashboardStatusLabel.ForeColor = $uiTextMuted
+            return
+        }
+        $dashboardStatusLabel.Text = '{0} aggregate checkpoint(s), newest observed {1}. Values without a local equivalent remain official-only.' -f `
+            $records.Count, $records[0].ObservedAt
+        $dashboardStatusLabel.ForeColor = $uiSuccess
+        foreach ($record in $records) {
+            $officialOnly = @(
+                $(if ($null -ne $record.LinesOfCode) { 'LOC {0:N0}' -f [Int64]$record.LinesOfCode }),
+                $(if ($null -ne $record.SkillsUsed) { 'Skills {0:N0}' -f [Int64]$record.SkillsUsed }),
+                $(if ($null -ne $record.CreditsUsed) { 'Credits {0:N0}' -f [Int64]$record.CreditsUsed }),
+                $(if ($null -ne $record.TokensUsed) { 'Tokens {0:N0}' -f [Int64]$record.TokensUsed })
+            ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            $rowIndex = $dashboardGrid.Rows.Add(
+                $record.ObservedAt,
+                $record.Period,
+                (Format-OfficialDashboardCount $record.OfficialTurns),
+                (Format-OfficialDashboardCount $record.LocalTurns),
+                (Format-OfficialDashboardCount $record.TurnVariance),
+                (Format-OfficialDashboardCount $record.OfficialPluginCalls),
+                (Format-OfficialDashboardCount $record.LocalPluginCalls),
+                (Format-OfficialDashboardCount $record.PluginVariance),
+                $(if ($officialOnly.Count -gt 0) { $officialOnly -join ' | ' } else { '-' }),
+                $record.Status
+            )
+            if ($record.Status -eq 'Aligned') { $dashboardGrid.Rows[$rowIndex].DefaultCellStyle.ForeColor = $uiSuccess }
+            elseif ($record.Status -ne 'Official-only metrics') { $dashboardGrid.Rows[$rowIndex].DefaultCellStyle.ForeColor = $uiWarning }
+        }
+    }
+
+    function Show-OfficialDashboardSnapshotDialog {
+        $capture = New-Object System.Windows.Forms.Form
+        $capture.Text = 'Record official dashboard snapshot'
+        $capture.StartPosition = 'CenterParent'
+        $capture.FormBorderStyle = 'FixedDialog'
+        $capture.MaximizeBox = $false
+        $capture.MinimizeBox = $false
+        $capture.ShowInTaskbar = $false
+        $capture.ClientSize = New-Object System.Drawing.Size(620, 410)
+        $capture.BackColor = $uiSurface
+        $capture.ForeColor = $uiText
+        $capture.AccessibleName = 'Record official Codex dashboard snapshot'
+        [void](Add-ControlCenterLabel -Parent $capture -Text 'Copy only aggregate values that are visible in the official Codex analytics dashboard.' `
+            -X 14 -Y 14 -Width 592 -Height 30 -Size 9 -Color $uiTextSecondary)
+
+        $periodStart = New-Object System.Windows.Forms.DateTimePicker
+        $periodStart.Location = New-Object System.Drawing.Point(14, 66)
+        $periodStart.Size = New-Object System.Drawing.Size(132, 24)
+        $periodStart.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+        $periodStart.Value = (Get-Date).Date.AddDays(-6)
+        $periodStart.AccessibleName = 'Official dashboard period start'
+        $capture.Controls.Add($periodStart)
+        [void](Add-ControlCenterLabel -Parent $capture -Text 'Period start' -X 14 -Y 46 -Width 132 -Height 18 -Size 8 -Color $uiTextMuted)
+        $periodEnd = New-Object System.Windows.Forms.DateTimePicker
+        $periodEnd.Location = New-Object System.Drawing.Point(158, 66)
+        $periodEnd.Size = New-Object System.Drawing.Size(132, 24)
+        $periodEnd.Format = [System.Windows.Forms.DateTimePickerFormat]::Short
+        $periodEnd.Value = (Get-Date).Date
+        $periodEnd.AccessibleName = 'Official dashboard period end'
+        $capture.Controls.Add($periodEnd)
+        [void](Add-ControlCenterLabel -Parent $capture -Text 'Period end' -X 158 -Y 46 -Width 132 -Height 18 -Size 8 -Color $uiTextMuted)
+        $rangeKind = New-Object System.Windows.Forms.ComboBox
+        $rangeKind.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+        [void]$rangeKind.Items.AddRange([object[]]@('7D','1M','Custom'))
+        $rangeKind.SelectedItem = '7D'
+        $rangeKind.Location = New-Object System.Drawing.Point(302, 66)
+        $rangeKind.Size = New-Object System.Drawing.Size(94, 24)
+        $rangeKind.AccessibleName = 'Official dashboard range type'
+        $capture.Controls.Add($rangeKind)
+        [void](Add-ControlCenterLabel -Parent $capture -Text 'Dashboard range' -X 302 -Y 46 -Width 94 -Height 18 -Size 8 -Color $uiTextMuted)
+        $groupBy = New-Object System.Windows.Forms.ComboBox
+        $groupBy.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+        [void]$groupBy.Items.AddRange([object[]]@('Day','Week','Month'))
+        $groupBy.SelectedItem = 'Day'
+        $groupBy.Location = New-Object System.Drawing.Point(408, 66)
+        $groupBy.Size = New-Object System.Drawing.Size(94, 24)
+        $groupBy.AccessibleName = 'Official dashboard grouping'
+        $capture.Controls.Add($groupBy)
+        [void](Add-ControlCenterLabel -Parent $capture -Text 'Dashboard grouping' -X 408 -Y 46 -Width 120 -Height 18 -Size 8 -Color $uiTextMuted)
+
+        $fields = @(
+            [pscustomobject]@{ Label = 'Turns'; Name = 'Turns'; X = 14; Y = 122; Hint = 'Leave blank if the dashboard shows a dash.' },
+            [pscustomobject]@{ Label = 'Plugin calls'; Name = 'PluginCalls'; X = 314; Y = 122; Hint = 'Leave blank if not shown.' },
+            [pscustomobject]@{ Label = 'Lines of code'; Name = 'LinesOfCode'; X = 14; Y = 194; Hint = 'Official-only metric.' },
+            [pscustomobject]@{ Label = 'Skills used'; Name = 'SkillsUsed'; X = 314; Y = 194; Hint = 'Official-only metric.' },
+            [pscustomobject]@{ Label = 'Credits used'; Name = 'CreditsUsed'; X = 14; Y = 266; Hint = 'Official-only; never converted to cost.' },
+            [pscustomobject]@{ Label = 'Tokens used'; Name = 'TokensUsed'; X = 314; Y = 266; Hint = 'Official-only; not merged into local token totals.' }
+        )
+        $inputs = @{}
+        foreach ($field in $fields) {
+            [void](Add-ControlCenterLabel -Parent $capture -Text $field.Label -X $field.X -Y ($field.Y - 20) -Width 270 -Height 18 -Size 8 -Color $uiTextMuted)
+            $input = New-Object System.Windows.Forms.TextBox
+            $input.Location = New-Object System.Drawing.Point($field.X, $field.Y)
+            $input.Size = New-Object System.Drawing.Size(270, 24)
+            $input.AccessibleName = ('Official dashboard ' + $field.Label)
+            $input.AccessibleDescription = $field.Hint
+            $capture.Controls.Add($input)
+            $inputs[$field.Name] = $input
+        }
+        $save = New-Object System.Windows.Forms.Button
+        $save.Text = '&Save aggregate snapshot'
+        $save.Location = New-Object System.Drawing.Point(342, 358)
+        $save.Size = New-Object System.Drawing.Size(160, 32)
+        $save.AccessibleName = 'Save official dashboard aggregate snapshot'
+        $capture.Controls.Add($save)
+        $cancel = New-Object System.Windows.Forms.Button
+        $cancel.Text = 'Cancel'
+        $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+        $cancel.Location = New-Object System.Drawing.Point(512, 358)
+        $cancel.Size = New-Object System.Drawing.Size(94, 32)
+        $capture.Controls.Add($cancel)
+        $capture.CancelButton = $cancel
+        $save.Add_Click({
+            try {
+                $snapshot = New-OfficialDashboardSnapshot -PeriodStart $periodStart.Value -PeriodEnd $periodEnd.Value `
+                    -RangeKind ([string]$rangeKind.SelectedItem) -GroupBy ([string]$groupBy.SelectedItem) `
+                    -Turns $inputs.Turns.Text -PluginCalls $inputs.PluginCalls.Text -LinesOfCode $inputs.LinesOfCode.Text `
+                    -SkillsUsed $inputs.SkillsUsed.Text -CreditsUsed $inputs.CreditsUsed.Text -TokensUsed $inputs.TokensUsed.Text
+                $script:officialDashboardHistory = Add-OfficialDashboardSnapshot `
+                    -Path $script:statePaths.OfficialDashboardHistory -Snapshot $snapshot
+                Refresh-OfficialDashboardHistoryGrid
+                $capture.DialogResult = [System.Windows.Forms.DialogResult]::OK
+                $capture.Close()
+            }
+            catch {
+                [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to record official dashboard snapshot') | Out-Null
+            }
+        })
+        try { [void]$capture.ShowDialog($dialog) }
+        finally { $capture.Dispose() }
+    }
+
+    $recordDashboardButton.Add_Click({ Show-OfficialDashboardSnapshotDialog })
+    Refresh-OfficialDashboardHistoryGrid
+
     # Opt-in usage guard and local Codex kill switch
     $guardReadiness = Get-UsageGuardReadiness -Policy $script:guardPolicy
     $guardTab = New-ControlCenterTab 'Usage guard'
@@ -4740,7 +5143,7 @@ function Show-ControlCenterDialog {
     # Model mix and provenance
     $provenanceTab = New-ControlCenterTab 'Sources'
     $sourceNote = Add-ControlCenterLabel -Parent $provenanceTab `
-        -Text 'Source labels keep local estimates and your downloaded reports from being mixed together.' `
+        -Text 'Live token counts, imported ChatGPT activity, and separate API usage stay visibly distinct.' `
         -X 14 -Y 14 -Width 1008 -Height 26 -Size 10 -Color $uiTextSecondary
     $workspaceSourceButton = Add-ControlCenterButton -Parent $provenanceTab -Text 'Open &usage summary' -X 14 -Y 46 -Width 196
     $complianceSourceButton = Add-ControlCenterButton -Parent $provenanceTab -Text 'Open &activity export' -X 222 -Y 46 -Width 196
@@ -4763,11 +5166,16 @@ function Show-ControlCenterDialog {
         -Columns @('Source','Status','Observed / effective','What it means') `
         -AccessibleName 'Usage data provenance'
     $sourceGrid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
-    $sourceWidths = @(170, 190, 190, 430)
+    $sourceWidths = @(210, 145, 175, 450)
     for ($columnIndex = 0; $columnIndex -lt $sourceWidths.Count; $columnIndex++) {
         $sourceGrid.Columns[$columnIndex].Width = $sourceWidths[$columnIndex]
     }
-    [void]$sourceGrid.Rows.Add('Local Codex logs','Active',(Get-Date).ToString('g'),'Near-real-time local token and activity records; no outbound request.')
+    [void]$sourceGrid.Rows.Add('Codex desktop / CLI','Live tokens',(Get-Date).ToString('g'),'Near-real-time token counts from local Codex logs; no outbound request.')
+    [void]$sourceGrid.Rows.Add('ChatGPT Chat + Work','Import activity','Web, desktop, mobile','Workspace reports describe messages and feature activity, not local per-chat token totals.')
+    [void]$sourceGrid.Rows.Add('Excel + Google Sheets','Import activity','Add-ins','Agentic usage can be reported by the workspace; this monitor does not inspect workbook content.')
+    [void]$sourceGrid.Rows.Add('PowerPoint','Import activity','Add-in','Agentic usage can be reported by the workspace; this monitor does not inspect presentation content.')
+    [void]$sourceGrid.Rows.Add('GPTs, Projects, Skills, Apps','Import activity','ChatGPT features','Shown only when present in a downloaded workspace report or personal activity export.')
+    [void]$sourceGrid.Rows.Add('OpenAI API','Separate','API usage dashboard','API tokens and costs are not read by this offline monitor.')
     [void]$sourceGrid.Rows.Add(
         'Local RTK savings',
         [string]$script:rtkSnapshot.HealthLabel,
@@ -4849,10 +5257,10 @@ function Show-ControlCenterDialog {
 
     $settingsLayout = New-Object System.Windows.Forms.TableLayoutPanel
     $settingsLayout.Location = New-Object System.Drawing.Point(8, 70)
-    $settingsLayout.Size = New-Object System.Drawing.Size(1020, 490)
+    $settingsLayout.Size = New-Object System.Drawing.Size(1020, 720)
     $settingsLayout.Anchor = 'Top,Left'
     $settingsLayout.ColumnCount = 2
-    $settingsLayout.RowCount = 2
+    $settingsLayout.RowCount = 3
     $settingsLayout.ColumnStyles.Clear()
     $settingsLayout.RowStyles.Clear()
     foreach ($width in @(50,50)) {
@@ -4861,7 +5269,7 @@ function Show-ControlCenterDialog {
         $columnStyle.Width = $width
         [void]$settingsLayout.ColumnStyles.Add($columnStyle)
     }
-    foreach ($height in @(50,50)) {
+    foreach ($height in @(33,33,34)) {
         $rowStyle = New-Object System.Windows.Forms.RowStyle
         $rowStyle.SizeType = [System.Windows.Forms.SizeType]::Percent
         $rowStyle.Height = $height
@@ -4953,6 +5361,49 @@ function Show-ControlCenterDialog {
         -Text 'Guard enforcement works only while this monitor is running.' `
         -X 344 -Y 176 -Width 128 -Height 42 -Size 7.5 -Color $uiTextMuted)
 
+    $reportingPanel = New-PersonalSettingsSection -Title 'OpenAI reporting & alerts' -Column 0 -Row 2
+    $settingsLayout.SetColumnSpan($reportingPanel, 2)
+    [void](Add-ControlCenterLabel -Parent $reportingPanel `
+        -Text 'JSON reports use local Codex token events. Downloaded single-user OpenAI summaries remain separately labeled because activity counts are not token totals.' `
+        -X 14 -Y 40 -Width 950 -Height 24 -Size 8.5 -Color $uiTextSecondary)
+    $notificationsCheck = New-Object System.Windows.Forms.CheckBox
+    $notificationsCheck.Text = 'Show Windows usage-alert notifications'
+    $notificationsCheck.Location = New-Object System.Drawing.Point(14, 72)
+    $notificationsCheck.Size = New-Object System.Drawing.Size(290, 26)
+    $notificationsCheck.ForeColor = $uiText
+    $notificationsCheck.AccessibleName = 'Windows usage-alert notifications'
+    $notificationsCheck.AccessibleDescription = 'Turn Windows notification pop-ups for monitor alerts on or off.'
+    $reportingPanel.Controls.Add($notificationsCheck)
+    $chatTitlesCheck = New-Object System.Windows.Forms.CheckBox
+    $chatTitlesCheck.Text = 'Show local chat titles'
+    $chatTitlesCheck.Location = New-Object System.Drawing.Point(14, 102)
+    $chatTitlesCheck.Size = New-Object System.Drawing.Size(230, 26)
+    $chatTitlesCheck.ForeColor = $uiText
+    $chatTitlesCheck.AccessibleName = 'Show local chat titles'
+    $chatTitlesCheck.AccessibleDescription = 'Keep local Codex chat titles visible in this running dashboard, or replace them with timestamp labels.'
+    $reportingPanel.Controls.Add($chatTitlesCheck)
+    [void](Add-ControlCenterLabel -Parent $reportingPanel -Text 'Report time zone' -X 332 -Y 75 -Width 112 -Height 24 -Size 9 -Color $uiText)
+    $reportTimeZoneBox = New-Object System.Windows.Forms.ComboBox
+    $reportTimeZoneBox.Location = New-Object System.Drawing.Point(446, 72)
+    $reportTimeZoneBox.Size = New-Object System.Drawing.Size(310, 28)
+    $reportTimeZoneBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    $reportTimeZoneBox.DisplayMember = 'Name'
+    $reportTimeZoneBox.ValueMember = 'Id'
+    foreach ($zone in @([TimeZoneInfo]::GetSystemTimeZones() | Sort-Object DisplayName)) {
+        [void]$reportTimeZoneBox.Items.Add([pscustomobject]@{ Name = $zone.DisplayName; Id = $zone.Id })
+    }
+    $reportingPanel.Controls.Add($reportTimeZoneBox)
+    [void](Add-ControlCenterLabel -Parent $reportingPanel -Text 'JSON period' -X 260 -Y 112 -Width 82 -Height 24 -Size 9 -Color $uiText)
+    $reportGroupBox = New-Object System.Windows.Forms.ComboBox
+    $reportGroupBox.Location = New-Object System.Drawing.Point(344, 109)
+    $reportGroupBox.Size = New-Object System.Drawing.Size(118, 28)
+    $reportGroupBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    [void]$reportGroupBox.Items.AddRange([string[]]@('Daily','Weekly','Monthly','Session'))
+    $reportGroupBox.SelectedItem = 'Daily'
+    $reportingPanel.Controls.Add($reportGroupBox)
+    $exportReportButton = Add-ControlCenterButton -Parent $reportingPanel -Text 'Export privacy-safe &JSON...' -X 478 -Y 108 -Width 210
+    $reportingStatusLabel = Add-ControlCenterLabel -Parent $reportingPanel -Text '' -X 700 -Y 108 -Width 264 -Height 38 -Size 8.5 -Color $uiTextMuted
+
     function Refresh-PersonalSettingsTab {
         try { $script:startupRegistration = Test-PersonalStartupRegistration -LauncherPath $script:launcherPath }
         catch {
@@ -4992,6 +5443,13 @@ function Show-ControlCenterDialog {
             $(if ($script:startupRegistration.MatchesLauncher) { 'Start-at-sign-in is enabled.' } else { 'Start-at-sign-in is off.' })
         $personalGuardLabel.ForeColor = if ($guardReadiness.StatusCode -in @('Armed','Advisory')) { $uiWarning } else { $uiTextSecondary }
 
+        $notificationsCheck.Checked = [bool]$script:personalSettings.NotificationsEnabled
+        $chatTitlesCheck.Checked = [bool]$script:personalSettings.ShowChatTitles
+        $selectedTimeZone = if ($script:reportingTimeZone -eq 'Local') { [TimeZoneInfo]::Local.Id } else { $script:reportingTimeZone }
+        $timeZoneMatch = @($reportTimeZoneBox.Items | Where-Object { $_.Id -eq $selectedTimeZone } | Select-Object -First 1)
+        if ($timeZoneMatch.Count -gt 0) { $reportTimeZoneBox.SelectedItem = $timeZoneMatch[0] }
+        $reportingStatusLabel.Text = 'JSON reports use this time zone for daily, weekly, and monthly boundaries. Chat titles and session IDs are always removed.'
+
         if ($script:diagnosticRows.Count -eq 0) { [void](Update-PersonalDiagnostics) }
         $diagnosticsGrid.Rows.Clear()
         foreach ($row in @($script:diagnosticRows)) {
@@ -5005,6 +5463,37 @@ function Show-ControlCenterDialog {
     $startAtSignInCheck.Add_CheckedChanged({
         $startMinimizedCheck.Enabled = $startAtSignInCheck.Checked
         if (-not $startAtSignInCheck.Checked) { $startMinimizedCheck.Checked = $false }
+    })
+    $notificationsCheck.Add_CheckedChanged({
+        [void](Set-MonitorNotificationsPreference -Enabled ([bool]$notificationsCheck.Checked))
+        Update-WindowsNotificationToggle
+    })
+    $chatTitlesCheck.Add_CheckedChanged({
+        $script:personalSettings.ShowChatTitles = [bool]$chatTitlesCheck.Checked
+        Save-PersonalSettingsState
+        Reload-Logs
+        Refresh-Display
+    })
+    $reportTimeZoneBox.Add_SelectedIndexChanged({
+        if ($null -eq $reportTimeZoneBox.SelectedItem) { return }
+        $script:reportingTimeZone = [string]$reportTimeZoneBox.SelectedItem.Id
+        $script:personalSettings.ReportingTimeZone = $script:reportingTimeZone
+        Save-PersonalSettingsState
+    })
+    $exportReportButton.Add_Click({
+        $saveDialog = New-Object System.Windows.Forms.SaveFileDialog
+        try {
+            $saveDialog.Title = 'Export privacy-safe OpenAI usage report'
+            $saveDialog.Filter = 'JSON files (*.json)|*.json'
+            $saveDialog.FileName = 'live-codex-usage-{0}-{1}.json' -f ([string]$reportGroupBox.SelectedItem).ToLowerInvariant(), (Get-Date).ToString('yyyyMMdd-HHmmss')
+            if ($saveDialog.ShowDialog($dialog) -ne [System.Windows.Forms.DialogResult]::OK) { return }
+            $report = New-PrivacySafeUsageReport -UsageEvents $script:visibleEvents -GroupBy ([string]$reportGroupBox.SelectedItem) -TimeZoneId $script:reportingTimeZone
+            [void](Export-PrivacySafeUsageReport -Report $report -Path $saveDialog.FileName)
+            $reportingStatusLabel.Text = 'Exported {0} aggregate row(s). No content, titles, paths, or session IDs were written.' -f $report.Rows.Count
+            $reportingStatusLabel.ForeColor = $uiSuccess
+        }
+        catch { [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to export usage report') | Out-Null }
+        finally { $saveDialog.Dispose() }
     })
     $saveStartupButton.Add_Click({
         try {
@@ -5263,6 +5752,10 @@ $grid.Add_SelectionChanged({
 $viewAllButton.Add_Click({ if (-not $script:isRefreshing) { Set-ViewMode -Mode 'All sessions' } })
 $viewLatestButton.Add_Click({ if (-not $script:isRefreshing) { Set-ViewMode -Mode 'Follow latest' } })
 $viewPinnedButton.Add_Click({ if (-not $script:isRefreshing) { Set-ViewMode -Mode 'Pinned session' } })
+$notificationToggleButton.Add_Click({
+    [void](Set-MonitorNotificationsPreference -Enabled (-not [bool]$script:personalSettings.NotificationsEnabled))
+    Update-WindowsNotificationToggle
+})
 $taskGrid.Add_DoubleClick({
     if ($taskGrid.SelectedRows.Count -gt 0 -and $null -ne $taskGrid.SelectedRows[0].Tag) {
         $script:pinnedSource = [string]$taskGrid.SelectedRows[0].Tag.Session
@@ -5341,6 +5834,14 @@ $controlCenterButton.Add_Click({
         if ($script:interactionTestMode) { throw }
         [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Unable to open control center') | Out-Null
     }
+})
+$detailsButton.Add_Click({
+    $script:showDiagnostics = -not $script:showDiagnostics
+    foreach ($diagnosticControl in @($integrationLabel, $integrationGrid, $activityLabel, $activityGrid)) {
+        $diagnosticControl.Visible = $script:showDiagnostics
+    }
+    $detailsButton.Text = if ($script:showDiagnostics) { '&Hide technical' } else { '&Technical details' }
+    Update-ResponsiveLayout
 })
 $script:isApplyingPreset = $false
 $presetBox.Add_SelectedIndexChanged({
@@ -5575,15 +6076,23 @@ if ($UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or $MiniSmo
                 throw "Dashboard label '$($pair[0].Text)' overlaps '$($pair[1].AccessibleName)'."
             }
         }
-        if (($integrationLabel.Top - $grid.Bottom) -lt 10 -or
-            ($activityLabel.Top - $taskGrid.Bottom) -lt 10 -or
-            ($integrationGrid.Top - $integrationLabel.Bottom) -lt 4 -or
-            ($activityGrid.Top - $activityLabel.Bottom) -lt 4 -or
-            ($explainBox.Top - $integrationGrid.Bottom) -lt 10 -or
+        if (($taskGrid.Top - $taskLabel.Bottom) -lt 4 -or
+            ($tokenLabel.Top - $taskGrid.Bottom) -lt 10 -or
+            ($grid.Top - $tokenLabel.Bottom) -lt 4 -or
+            ($detailLabel.Top - $grid.Bottom) -lt 10 -or
+            ($explainBox.Top - $detailLabel.Bottom) -lt 4 -or
+            $integrationLabel.Visible -or $activityLabel.Visible -or
             $form.AutoScrollMinSize.Height -lt ($explainBox.Bottom + 20)) {
             throw 'Dashboard sections overlap or are outside the short-screen scroll canvas.'
         }
-        Write-Output 'Layout=1040-to-1280x720; CardsBehind=True; ControlsClear=True; SectionsSeparated=True; VirtualHeight=900'
+        if ([string]::IsNullOrWhiteSpace($currentChatLabel.Text)) {
+            throw 'Current chat title is missing from the usage overview.'
+        }
+        if ($sourceCoverageLabel.Text -notmatch 'ChatGPT desktop/web/mobile' -or
+            -not $taskGrid.Columns.Contains('Source') -or -not $grid.Columns.Contains('Source')) {
+            throw 'Source coverage is not visible in the overview and usage tables.'
+        }
+        Write-Output 'Layout=1040-to-1280x720; CardsBehind=True; ControlsClear=True; SectionsSeparated=True; ChatTitle=True; Sources=True; VirtualHeight=1036'
     }
     elseif ($UiInteractionSmokeTest) {
         $interactionExport = Join-Path ([System.IO.Path]::GetTempPath()) (
@@ -5594,6 +6103,9 @@ if ($UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or $MiniSmo
             [System.Windows.Forms.Application]::DoEvents()
             if ($script:events.Count -lt 1 -or [string]::IsNullOrWhiteSpace([string]$script:latestSession)) {
                 throw 'Main-button interaction test requires loaded token events and a latest session.'
+            }
+            if ($taskGrid.Rows.Count -lt 1 -or [string]$taskGrid.Rows[0].Cells['Last active'].Value -match '^(Active|Recent|Quiet)$') {
+                throw 'Chat grid did not render a timestamp in the Last active column.'
             }
 
             $viewLatestButton.PerformClick()
@@ -5638,6 +6150,25 @@ if ($UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or $MiniSmo
             $controlCenterButton.PerformClick()
             if ($script:lastInteractionResult -ne 'ControlCenterReady') {
                 throw 'Control center button did not construct its workspace.'
+            }
+
+            $detailsButton.PerformClick()
+            if (-not $script:showDiagnostics -or -not $integrationGrid.Visible -or -not $activityGrid.Visible) {
+                throw 'Technical details button did not reveal diagnostic tables.'
+            }
+            $detailsButton.PerformClick()
+            if ($script:showDiagnostics -or $integrationGrid.Visible -or $activityGrid.Visible) {
+                throw 'Technical details button did not hide diagnostic tables.'
+            }
+
+            $notificationsBeforeToggle = [bool]$script:personalSettings.NotificationsEnabled
+            $notificationToggleButton.PerformClick()
+            if ([bool]$script:personalSettings.NotificationsEnabled -eq $notificationsBeforeToggle) {
+                throw 'Dashboard alert toggle did not update the Windows notification preference.'
+            }
+            $notificationToggleButton.PerformClick()
+            if ([bool]$script:personalSettings.NotificationsEnabled -ne $notificationsBeforeToggle) {
+                throw 'Dashboard alert toggle did not restore the Windows notification preference.'
             }
 
             $refreshSecondsBox.Value = 7
@@ -5699,7 +6230,7 @@ if ($UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or $MiniSmo
 
             $mainButtons = @(
                 $viewAllButton, $viewLatestButton, $viewPinnedButton, $pinButton, $clearButton,
-                $miniButton, $enterpriseButton, $controlCenterButton, $loadRangeButton, $exportButton
+                $notificationToggleButton, $miniButton, $enterpriseButton, $controlCenterButton, $detailsButton, $loadRangeButton, $exportButton
             )
             if (@($mainButtons | Where-Object { -not $_.Enabled }).Count -gt 0) {
                 throw 'One or more main dashboard buttons remained disabled after interaction QA.'
@@ -5707,7 +6238,7 @@ if ($UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or $MiniSmo
             if (-not $refreshSecondsBox.Enabled) {
                 throw 'Refresh interval control remained disabled after interaction QA.'
             }
-            Write-Output ('MainButtons=10; RefreshControl=True; ViewModes=True; Pin=True; FreshReset=True; FreshAppend={0}; Dates=True; Export=True; Import=True; ControlCenter=True; MiniToggle=True' -f $freshAppendVerified)
+            Write-Output ('MainButtons=12; RefreshControl=True; ViewModes=True; Pin=True; FreshReset=True; FreshAppend={0}; Dates=True; Export=True; Import=True; ControlCenter=True; DetailsToggle=True; AlertsToggle=True; MiniToggle=True' -f $freshAppendVerified)
         }
         finally {
             $script:interactionExportPath = ''
@@ -5718,8 +6249,12 @@ if ($UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or $MiniSmo
     elseif ($MiniSmokeTest) {
         Set-MiniMode -Enabled $true
         Refresh-Display
+        if ($script:fullModeControls -contains $currentChatLabel -or
+            [string]::IsNullOrWhiteSpace($currentChatLabel.Text)) {
+            throw 'Mini mode did not keep the current chat title visible.'
+        }
         Set-MiniMode -Enabled $false
-        Write-Output 'Mini mode toggled successfully.'
+        Write-Output 'Mini mode toggled successfully; ChatTitle=True.'
     }
     else {
         Write-Output 'GUI controls constructed successfully.'

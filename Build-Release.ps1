@@ -87,6 +87,8 @@ $releaseItems = @(
     'Live-Codex-Usage-GUI.ps1',
     'Live-Codex-Usage.ps1',
     'Live-Codex-Usage-Enterprise.psm1',
+    'Live-Codex-Usage-OfficialDashboard.psm1',
+    'Live-Codex-Usage-Reports.psm1',
     'Live-Codex-Usage-Compliance.psm1',
     'Live-Codex-Usage-Cost.psm1',
     'Live-Codex-Usage-Efficiency.psm1',
@@ -123,8 +125,19 @@ $releasePaths = foreach ($item in $releaseItems) {
 }
 
 Compress-Archive -LiteralPath $releasePaths -DestinationPath $zipPath -CompressionLevel Optimal -Force
-$hash = Get-FileHash -LiteralPath $zipPath -Algorithm SHA256
-$manifest = '{0} *{1}' -f $hash.Hash.ToLowerInvariant(), (Split-Path -Leaf $zipPath)
+$hashValue = if (Get-Command -Name Get-FileHash -ErrorAction SilentlyContinue) {
+    (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
+}
+else {
+    $stream = [System.IO.File]::OpenRead($zipPath)
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '') }
+        finally { $sha.Dispose() }
+    }
+    finally { $stream.Dispose() }
+}
+$manifest = '{0} *{1}' -f $hashValue.ToLowerInvariant(), (Split-Path -Leaf $zipPath)
 Set-Content -LiteralPath $hashPath -Value $manifest -Encoding Ascii
 
-Write-Output ("Release={0}`nSHA256={1}`nManifest={2}" -f $zipPath, $hash.Hash.ToLowerInvariant(), $hashPath)
+Write-Output ("Release={0}`nSHA256={1}`nManifest={2}" -f $zipPath, $hashValue.ToLowerInvariant(), $hashPath)

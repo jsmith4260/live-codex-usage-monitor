@@ -20,6 +20,8 @@ $guardModule = Join-Path $scriptDir 'Live-Codex-Usage-Guard.psm1'
 $instanceModule = Join-Path $scriptDir 'Live-Codex-Usage-Instance.psm1'
 $privacyModule = Join-Path $scriptDir 'Live-Codex-Usage-Privacy.psm1'
 $personalModule = Join-Path $scriptDir 'Live-Codex-Usage-Personal.psm1'
+$officialDashboardModule = Join-Path $scriptDir 'Live-Codex-Usage-OfficialDashboard.psm1'
+$reportModule = Join-Path $scriptDir 'Live-Codex-Usage-Reports.psm1'
 $rtkModule = Join-Path $scriptDir 'Live-Codex-Usage-RTK.psm1'
 $startHereLauncher = Join-Path $scriptDir 'START-HERE.cmd'
 $standardCmdLauncher = Join-Path $scriptDir 'Start-Live-Codex-Usage.cmd'
@@ -74,7 +76,7 @@ function Invoke-MonitorTest {
 Invoke-MonitorTest -Name 'Token semantics' -Arguments @('-Once') -ExpectedPattern 'Events=3;.*FreshBurn=650;.*NewInput=500'
 Invoke-MonitorTest -Name 'Full GUI construction' -Arguments @('-UiSmokeTest') -ExpectedPattern 'GUI controls constructed successfully'
 Invoke-MonitorTest -Name 'Laptop-height dashboard layout' -Arguments @('-UiLayoutSmokeTest') `
-    -ExpectedPattern 'Layout=1040-to-1280x720; CardsBehind=True; ControlsClear=True; SectionsSeparated=True; VirtualHeight=900'
+    -ExpectedPattern 'Layout=1040-to-1280x720; CardsBehind=True; ControlsClear=True; SectionsSeparated=True; ChatTitle=True; Sources=True; VirtualHeight=1036'
 $interactionTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
     'live-codex-ui-interactions-{0}' -f [guid]::NewGuid().ToString('N')
 )
@@ -90,7 +92,7 @@ try {
     Invoke-MonitorTest -Name 'All main dashboard button interactions' `
         -CodexHomeOverride $interactionCodexHome `
         -Arguments @('-UiInteractionSmokeTest', '-InteractionAppendPath', $interactionAppendPath) `
-        -ExpectedPattern 'MainButtons=10; RefreshControl=True; ViewModes=True; Pin=True; FreshReset=True; FreshAppend=True; Dates=True; Export=True; Import=True; ControlCenter=True; MiniToggle=True'
+        -ExpectedPattern 'MainButtons=12; RefreshControl=True; ViewModes=True; Pin=True; FreshReset=True; FreshAppend=True; Dates=True; Export=True; Import=True; ControlCenter=True; DetailsToggle=True; AlertsToggle=True; MiniToggle=True'
 }
 finally {
     $resolvedInteractionRoot = [System.IO.Path]::GetFullPath($interactionTestRoot)
@@ -102,7 +104,7 @@ finally {
 Invoke-MonitorTest -Name 'Mini layout toggle' -Arguments @('-MiniSmokeTest') -ExpectedPattern 'Mini mode toggled successfully'
 Invoke-MonitorTest -Name 'Mini startup construction' -Arguments @('-UiSmokeTest', '-StartMini') -ExpectedPattern 'GUI controls constructed successfully'
 Invoke-MonitorTest -Name 'Integration parsing' -Arguments @('-IntegrationSmokeTest') -ExpectedPattern 'IntegrationCalls=1;.*Local shell:1'
-Invoke-MonitorTest -Name 'Private task labels' -Arguments @('-TaskSmokeTest') -ExpectedPattern 'Tasks=2;.*gpt-test.*gpt-archived-test' -RejectedPattern 'Confidential|acquisition'
+Invoke-MonitorTest -Name 'Actual chat titles and token sources' -Arguments @('-TaskSmokeTest') -ExpectedPattern 'Tasks=2;.*Improve onboarding flow.*Codex Desktop.*Investigate build latency.*Codex CLI' -RejectedPattern 'Confidential|acquisition'
 Invoke-MonitorTest -Name 'Date-range reload' -Arguments @('-DateRangeSmokeTest') -ExpectedPattern 'DateRange=2026-07-25 to 2026-07-25; Events=1'
 Invoke-MonitorTest -Name 'Command-line date range' -Arguments @('-Once', '-FromDate', '2026-07-26', '-ToDate', '2026-07-26') -ExpectedPattern 'Events=2;'
 Invoke-MonitorTest -Name 'Archived-session discovery' -Arguments @('-ArchivedSmokeTest') -ExpectedPattern 'ArchivedEvents=1; TotalEvents=3'
@@ -124,7 +126,7 @@ Invoke-MonitorTest -Name 'Compliance dialog construction' -Arguments @(
 ) -ExpectedPattern 'Compliance dialog constructed successfully; Tabs=4; Rows=2'
 Invoke-MonitorTest -Name 'Control center construction' -Arguments @(
     '-InsightsUiSmokeTest', '-OfficialSnapshotPath', $officialFixture
-) -ExpectedPattern 'Control center constructed successfully; Tabs=9; TrendRows=2; Models=2; Instance=INFO'
+) -ExpectedPattern 'Control center constructed successfully; Tabs=10; TrendRows=2; Models=2; Instance=INFO'
 
 Write-Host '  Work-PC launcher policy and download-marker handling'
 $launcherTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
@@ -443,6 +445,35 @@ if ($comparison.Count -ne 2 -or $comparison[0].Status -ne 'Aligned' -or
     throw 'Official snapshot reconciliation status is incorrect.'
 }
 
+Write-Host '  Official dashboard aggregate checkpoint history and reconciliation'
+Import-Module -Name $officialDashboardModule -Force
+Import-Module -Name $privacyModule -Force
+$dashboardHistoryPath = Join-Path ([System.IO.Path]::GetTempPath()) ('live-codex-dashboard-{0}.json' -f [guid]::NewGuid().ToString('N'))
+try {
+    $dashboardSnapshot = New-OfficialDashboardSnapshot `
+        -PeriodStart ([datetime]'2026-07-25') -PeriodEnd ([datetime]'2026-07-26') `
+        -ObservedAt ([datetime]'2026-07-27T12:00:00Z') -RangeKind Custom -GroupBy Day `
+        -Turns 3 -PluginCalls 1 -LinesOfCode 24 -SkillsUsed 0
+    $dashboardHistory = Add-OfficialDashboardSnapshot -Path $dashboardHistoryPath -Snapshot $dashboardSnapshot
+    $dashboardJson = Get-Content -LiteralPath $dashboardHistoryPath -Raw
+    if (($dashboardJson -match 'secret|session|rollout|sessions[\\/]') -or -not (Test-AggregatePrivacyShape -Value $dashboardHistory).Passed) {
+        throw 'Official dashboard history retained an identifier or unsafe field.'
+    }
+    $dashboardComparison = @(Get-OfficialDashboardReconciliation `
+        -UsageEvents @(
+            [pscustomobject]@{ At = [datetime]'2026-07-25T12:00:00'; FreshBurn = 1 },
+            [pscustomobject]@{ At = [datetime]'2026-07-26T12:00:00'; FreshBurn = 1 },
+            [pscustomobject]@{ At = [datetime]'2026-07-26T13:00:00'; FreshBurn = 1 }
+        ) `
+        -IntegrationEvents @([pscustomobject]@{ At = [datetime]'2026-07-26T14:00:00' }) `
+        -History $dashboardHistory)
+    if ($dashboardComparison.Count -ne 1 -or $dashboardComparison[0].Status -ne 'Aligned' -or
+        $dashboardComparison[0].LinesOfCode -ne 24) {
+        throw 'Official dashboard checkpoint reconciliation is incorrect.'
+    }
+}
+finally { Remove-Item -LiteralPath $dashboardHistoryPath -Force -ErrorAction SilentlyContinue }
+
 Write-Host '  Privacy-safe persistent aggregate store'
 Import-Module -Name $storeModule -Force
 $storeEvents = @(
@@ -642,6 +673,29 @@ try {
     if ([int]$legacySettings.RefreshSeconds -ne 5) {
         throw 'Legacy personal settings did not receive the safe five-second refresh default.'
     }
+    if (-not [bool]$legacySettings.NotificationsEnabled -or [string]$legacySettings.ReportingTimeZone -ne 'Local') {
+        throw 'Legacy personal settings did not receive safe reporting and notification defaults.'
+    }
+    $notificationCommand = @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $monitor,
+        '-CodexHome', $fixtureHome, '-StateRoot', $personalStateRoot,
+        '-WindowsNotifications', 'Off', '-NoSound', '-DisableRtkIntegration'
+    )
+    $notificationOutput = @(& powershell.exe @notificationCommand 2>&1)
+    if ($LASTEXITCODE -ne 0 -or ($notificationOutput -join "`n") -notmatch 'WindowsNotifications=Off; Persisted=True' -or
+        (Import-PersonalMonitorSettings -Path $personalSettingsPath).NotificationsEnabled) {
+        throw 'PowerShell notification-off preference did not persist correctly.'
+    }
+    $notificationCommand = @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $monitor,
+        '-CodexHome', $fixtureHome, '-StateRoot', $personalStateRoot,
+        '-WindowsNotifications', 'On', '-NoSound', '-DisableRtkIntegration'
+    )
+    $notificationOutput = @(& powershell.exe @notificationCommand 2>&1)
+    if ($LASTEXITCODE -ne 0 -or ($notificationOutput -join "`n") -notmatch 'WindowsNotifications=On; Persisted=True' -or
+        -not (Import-PersonalMonitorSettings -Path $personalSettingsPath).NotificationsEnabled) {
+        throw 'PowerShell notification-on preference did not persist correctly.'
+    }
     $registration = Set-PersonalStartupRegistration -Enabled $true -LauncherPath $monitor `
         -StartupFolder $personalStartupRoot -Confirm:$false
     if (-not $registration.Registered -or -not $registration.MatchesLauncher) {
@@ -668,6 +722,25 @@ finally {
         Remove-Item -LiteralPath $resolvedPersonalRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+$reportExport = Join-Path ([System.IO.Path]::GetTempPath()) ('live-codex-report-{0}.json' -f [guid]::NewGuid().ToString('N'))
+try {
+    Write-Host '  Privacy-safe JSON reporting and time-zone boundaries'
+    Import-Module -Name $reportModule -Force
+    $reportEvents = @(
+        [pscustomobject]@{ At=[datetime]'2026-07-26T23:30:00'; Source='Codex'; Session='secret-session-one'; Model='gpt-test'; FreshBurn=10; NewInput=4; Output=6; Reasoning=0; Cached=2; Total=12 },
+        [pscustomobject]@{ At=[datetime]'2026-07-27T00:30:00'; Source='Codex'; Session='secret-session-two'; Model='gpt-test'; FreshBurn=20; NewInput=8; Output=12; Reasoning=0; Cached=4; Total=24 }
+    )
+    $dailyReport = New-PrivacySafeUsageReport -UsageEvents $reportEvents -GroupBy Daily -TimeZoneId 'UTC'
+    $sessionReport = New-PrivacySafeUsageReport -UsageEvents $reportEvents -GroupBy Session -TimeZoneId 'UTC'
+    [void](Export-PrivacySafeUsageReport -Report $sessionReport -Path $reportExport)
+    $reportText = Get-Content -LiteralPath $reportExport -Raw
+    if ($dailyReport.Rows.Count -ne 2 -or $sessionReport.Rows.Count -ne 2 -or
+        $reportText -match 'secret-session|rollout-|sessions[\\/]') {
+        throw 'Privacy-safe JSON reporting has incorrect aggregation or exposed an identifier.'
+    }
+}
+finally { Remove-Item -LiteralPath $reportExport -Force -ErrorAction SilentlyContinue }
 
 $localExport = Join-Path ([System.IO.Path]::GetTempPath()) ('live-codex-local-{0}.csv' -f [guid]::NewGuid().ToString('N'))
 $complianceExport = Join-Path ([System.IO.Path]::GetTempPath()) ('live-codex-compliance-{0}.csv' -f [guid]::NewGuid().ToString('N'))

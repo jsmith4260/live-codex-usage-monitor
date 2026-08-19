@@ -16,6 +16,7 @@ The application distinguishes three fundamentally different sources:
 | Existing local Codex JSONL | Near-real-time Codex activity and locally recorded quota metadata | File timestamp / live tail |
 | Downloaded official usage snapshot | Official credits or token totals for reconciliation | File timestamp and official reporting cadence |
 | Downloaded Workspace Analytics / Compliance export | Enterprise adoption and supported product-surface activity | Export timestamp |
+| User-entered official dashboard checkpoint | Official aggregate Codex dashboard values for a selected period | Observation timestamp |
 
 Workspace Analytics is not real-time. OpenAI documents refreshes every 1–24 hours, typically 6–12 hours, with a target of up to 48 hours. The monitor labels an imported report as typical, older than typical, delayed, or stale using those intervals. It never signs in, reads browser cookies, or invokes an undocumented account endpoint to obtain fresher data.
 
@@ -49,6 +50,12 @@ The reconciliation view joins local daily estimated credits to the locally impor
 
 A difference does not imply a billing error. Local logs can be incomplete, official reporting can lag, model mapping can be unavailable, and supported ChatGPT/Office surfaces can draw from a shared credit pool without creating local Codex JSONL.
 
+## Official dashboard checkpoint history
+
+The Control Center **Official history** tab records only values that the user can see in the signed-in Codex analytics dashboard: selected period, grouping, turns, plugin calls, lines of code, skills, credits, and tokens. It does not sign in, retain browser state, scrape hidden page data, or call an undocumented endpoint.
+
+Turns and plugin calls are reconciled only against local records in the same inclusive date range. Lines of code, skills, credits, and tokens remain official-only, because the local log format does not establish comparable values. OpenAI's official documentation identifies the authenticated Analytics API as the supported route for a credentialed programmatic aggregate integration; that API is intentionally not configured by this desktop app without approved credentials.
+
 ## Usage guard
 
 The guard is disabled by default.
@@ -65,6 +72,7 @@ Because process termination can interrupt active work, enforced mode should use 
 
 - [OpenAI Codex rate card](https://help.openai.com/en/articles/20001106-codex-rate-card)
 - [OpenAI API model price comparison](https://developers.openai.com/api/docs/models/compare)
+- [OpenAI Codex governance and Analytics API boundary](https://learn.chatgpt.com/docs/enterprise/governance)
 - [Workspace analytics for ChatGPT Enterprise and Edu](https://help.openai.com/en/articles/10875114)
 - [OpenAI Compliance Platform](https://help.openai.com/en/articles/9261474-openai-compliance-platform-for-enterprise-customers)
 - [Flexible credits for ChatGPT plans](https://help.openai.com/en/articles/12642688-using-credits-for-flexible-usage-in-chatgpt-pluspro)

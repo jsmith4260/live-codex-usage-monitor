@@ -1,4 +1,4 @@
-{"timestamp":"2026-07-25T15:00:00-04:00","type":"session_meta","payload":{"context_window":200000}}
+{"timestamp":"2026-07-25T15:00:00-04:00","type":"session_meta","payload":{"id":"00000000-0000-0000-0000-000000000002","originator":"Codex CLI","source":"cli","context_window":200000}}
 {"timestamp":"2026-07-25T15:00:01-04:00","type":"turn_context","payload":{"model":"gpt-archived-test","effort":"low","approval_policy":"on-request","sandbox_policy":{"mode":"workspace-write"}}}
 {"timestamp":"2026-07-25T15:00:02-04:00","type":"event_msg","payload":{"type":"user_message","message":"Archived confidential prompt that must never be exported"}}
 {"timestamp":"2026-07-25T15:00:03-04:00","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":500,"cached_input_tokens":300,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":600}},"rate_limits":{"plan_type":"enterprise","primary":{"used_percent":20}}}}

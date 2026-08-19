@@ -15,7 +15,8 @@ function Get-MonitorPrivacyContract {
             'Allowlisted local Codex efficiency settings and managed-policy status',
             'User-selected local personal usage summaries',
             'User-selected local personal activity exports',
-            'User-selected local downloaded usage reports'
+            'User-selected local downloaded usage reports',
+            'User-entered aggregate values from the official Codex analytics dashboard'
         )
         NeverPersist = @(
             'Prompt text',
@@ -68,6 +69,7 @@ function Get-MonitorStatePaths {
     return [pscustomobject][ordered]@{
         Root = $resolvedRoot
         AggregateStore = Join-Path $resolvedRoot 'aggregate-v1.json'
+        OfficialDashboardHistory = Join-Path $resolvedRoot 'official-dashboard-history-v1.json'
         GuardPolicy = Join-Path $resolvedRoot 'guard-policy-v1.json'
         CostProfile = Join-Path $resolvedRoot 'cost-profile-v1.json'
         PersonalSettings = Join-Path $resolvedRoot 'personal-settings-v1.json'
