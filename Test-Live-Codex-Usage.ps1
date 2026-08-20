@@ -105,6 +105,31 @@ Invoke-MonitorTest -Name 'Mini layout toggle' -Arguments @('-MiniSmokeTest') -Ex
 Invoke-MonitorTest -Name 'Mini startup construction' -Arguments @('-UiSmokeTest', '-StartMini') -ExpectedPattern 'GUI controls constructed successfully'
 Invoke-MonitorTest -Name 'Integration parsing' -Arguments @('-IntegrationSmokeTest') -ExpectedPattern 'IntegrationCalls=1;.*Local shell:1'
 Invoke-MonitorTest -Name 'Actual chat titles and token sources' -Arguments @('-TaskSmokeTest') -ExpectedPattern 'Tasks=2;.*Improve onboarding flow.*Codex Desktop.*Investigate build latency.*Codex CLI' -RejectedPattern 'Confidential|acquisition'
+$hiddenIndexTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+    'live-codex-hidden-index-{0}' -f [guid]::NewGuid().ToString('N')
+)
+$hiddenIndexCodexHome = Join-Path $hiddenIndexTestRoot 'codex-home'
+try {
+    [void](New-Item -ItemType Directory -Path $hiddenIndexTestRoot)
+    Copy-Item -LiteralPath $fixtureHome -Destination $hiddenIndexCodexHome -Recurse
+    $hiddenIndexPath = Join-Path $hiddenIndexCodexHome 'session_index.jsonl'
+    $hiddenIndexFile = Get-Item -LiteralPath $hiddenIndexPath
+    $hiddenIndexFile.Attributes = $hiddenIndexFile.Attributes -bor [System.IO.FileAttributes]::Hidden
+    Invoke-MonitorTest -Name 'Hidden Codex title index' -CodexHomeOverride $hiddenIndexCodexHome `
+        -Arguments @('-TaskSmokeTest') `
+        -ExpectedPattern 'Tasks=2;.*Improve onboarding flow.*Investigate build latency'
+}
+finally {
+    $resolvedHiddenIndexRoot = [System.IO.Path]::GetFullPath($hiddenIndexTestRoot)
+    $resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    if ($resolvedHiddenIndexRoot.StartsWith($resolvedTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath $resolvedHiddenIndexRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+Invoke-MonitorTest -Name 'Chat-title visibility Settings toggle' -Arguments @('-TitleVisibilitySmokeTest') `
+    -ExpectedPattern 'TitleVisibility=OnOff; Visible=True; Hidden=True; Restored=True'
+Invoke-MonitorTest -Name 'Prompt-title visibility Settings toggle' -Arguments @('-TitleVisibilitySmokeTest', '-ShowPromptTaskTitles') `
+    -ExpectedPattern 'TitleVisibility=OnOff; Visible=True; Hidden=True; Restored=True'
 Invoke-MonitorTest -Name 'Date-range reload' -Arguments @('-DateRangeSmokeTest') -ExpectedPattern 'DateRange=2026-07-25 to 2026-07-25; Events=1'
 Invoke-MonitorTest -Name 'Command-line date range' -Arguments @('-Once', '-FromDate', '2026-07-26', '-ToDate', '2026-07-26') -ExpectedPattern 'Events=2;'
 Invoke-MonitorTest -Name 'Archived-session discovery' -Arguments @('-ArchivedSmokeTest') -ExpectedPattern 'ArchivedEvents=1; TotalEvents=3'

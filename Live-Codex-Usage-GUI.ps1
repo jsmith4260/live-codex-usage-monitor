@@ -68,6 +68,7 @@ param(
     [switch]$MiniSmokeTest,
     [switch]$IntegrationSmokeTest,
     [switch]$TaskSmokeTest,
+    [switch]$TitleVisibilitySmokeTest,
     [switch]$DateRangeSmokeTest,
     [switch]$StatusSmokeTest,
     [switch]$AlertSmokeTest,
@@ -125,7 +126,7 @@ $script:instanceCoordinator = $null
 $script:instanceStatusCode = 'Unavailable'
 $automatedMode = @(
     $Once, $UiSmokeTest, $UiLayoutSmokeTest, $UiInteractionSmokeTest, $MiniSmokeTest,
-    $IntegrationSmokeTest, $TaskSmokeTest,
+    $IntegrationSmokeTest, $TaskSmokeTest, $TitleVisibilitySmokeTest,
     $DateRangeSmokeTest, $StatusSmokeTest, $AlertSmokeTest, $ArchivedSmokeTest,
     $PresetSmokeTest, $RangeCacheSmokeTest, $QuotaResetSmokeTest, $ExportSmokeTest,
     $EnterpriseSmokeTest, $EnterpriseUiSmokeTest, $ComplianceUiSmokeTest,
@@ -424,7 +425,7 @@ function Update-TaskTitlesFromSessionIndex {
     if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) { return }
 
     try {
-        $indexFile = Get-Item -LiteralPath $indexPath
+        $indexFile = Get-Item -Force -LiteralPath $indexPath
         $signature = '{0}:{1}' -f $indexFile.Length, $indexFile.LastWriteTimeUtc.Ticks
         if ($signature -ne $script:sessionIndexSignature) {
             $titles = @{}
@@ -476,7 +477,7 @@ function Test-IsSyntheticTaskTitle {
 function Update-TaskTitleFromLine {
     param([string]$Line, [string]$SourceFile)
 
-    if (-not $ShowPromptTaskTitles) { return }
+    if (-not $ShowPromptTaskTitles -or -not [bool]$script:personalSettings.ShowChatTitles) { return }
     if ($Line -notmatch 'user_message|\"role\":\"user\"') { return }
     $info = Get-SessionInfoRecord -SourceFile $SourceFile
     if (-not [string]::IsNullOrWhiteSpace($info.Title) -and -not (Test-IsSyntheticTaskTitle -Title $info.Title)) { return }
@@ -1764,6 +1765,19 @@ function Save-PersonalSettingsState {
     Export-PersonalMonitorSettings -Settings $script:personalSettings -Path $script:statePaths.PersonalSettings
 }
 
+function Set-ChatTitleVisibility {
+    param(
+        [bool]$Enabled,
+        [switch]$SkipDisplayRefresh
+    )
+
+    if ([bool]$script:personalSettings.ShowChatTitles -eq $Enabled) { return }
+    $script:personalSettings.ShowChatTitles = $Enabled
+    Save-PersonalSettingsState
+    Reload-Logs
+    if (-not $SkipDisplayRefresh) { Refresh-Display }
+}
+
 function Test-MonitorAlertsEnabled {
     return [bool]$script:personalSettings.NotificationsEnabled
 }
@@ -1962,7 +1976,7 @@ function Invoke-UsageGuardCycle {
 $requiresPreloadedEvents = (
     $Once -or $UiSmokeTest -or $UiLayoutSmokeTest -or $UiInteractionSmokeTest -or
     $MiniSmokeTest -or $IntegrationSmokeTest -or
-    $TaskSmokeTest -or $DateRangeSmokeTest -or $StatusSmokeTest -or
+    $TaskSmokeTest -or $TitleVisibilitySmokeTest -or $DateRangeSmokeTest -or $StatusSmokeTest -or
     $AlertSmokeTest -or $ArchivedSmokeTest -or $PresetSmokeTest -or
     $RangeCacheSmokeTest -or $QuotaResetSmokeTest -or $ExportSmokeTest -or
     $EnterpriseSmokeTest -or $EnterpriseUiSmokeTest -or
@@ -2510,6 +2524,37 @@ if (-not [string]::IsNullOrWhiteSpace($ReportJsonPath)) {
     $report = New-PrivacySafeUsageReport -UsageEvents $reportEvents -GroupBy $ReportGroupBy -TimeZoneId $script:reportingTimeZone
     [void](Export-PrivacySafeUsageReport -Report $report -Path $ReportJsonPath)
     Write-Output ('PrivacySafeReport={0}; GroupBy={1}; Rows={2}; TimeZone={3}' -f $ReportJsonPath, $ReportGroupBy, $report.Rows.Count, $report.TimeZoneId)
+    exit 0
+}
+
+if ($TitleVisibilitySmokeTest) {
+    $originalTitlePreference = [bool]$script:personalSettings.ShowChatTitles
+    try {
+        Set-ChatTitleVisibility -Enabled $true -SkipDisplayRefresh
+        $visibleTasks = @(Get-TaskBreakdown -VisibleEvents @(Get-DisplayEvents -Mode 'All sessions'))
+        if (@($visibleTasks | Where-Object { [string]$_.Task -eq 'Improve onboarding flow' }).Count -ne 1) {
+            throw 'The title visibility setting did not show the indexed Codex title.'
+        }
+
+        Set-ChatTitleVisibility -Enabled $false -SkipDisplayRefresh
+        $hiddenTasks = @(Get-TaskBreakdown -VisibleEvents @(Get-DisplayEvents -Mode 'All sessions'))
+        $containsIndexedTitle = @($hiddenTasks | Where-Object { ([string]$_.Task) -eq 'Improve onboarding flow' }).Count -gt 0
+        $allUseFallbackLabels = $hiddenTasks.Count -gt 0 -and
+            @($hiddenTasks | Where-Object { ([string]$_.Task) -notmatch '^Title unavailable - ' }).Count -eq 0
+        if ($containsIndexedTitle -or -not $allUseFallbackLabels) {
+            throw 'The title visibility setting did not replace titles with timestamp labels.'
+        }
+
+        Set-ChatTitleVisibility -Enabled $true -SkipDisplayRefresh
+        $restoredTasks = @(Get-TaskBreakdown -VisibleEvents @(Get-DisplayEvents -Mode 'All sessions'))
+        if (@($restoredTasks | Where-Object { [string]$_.Task -eq 'Improve onboarding flow' }).Count -ne 1) {
+            throw 'The title visibility setting did not restore indexed Codex titles.'
+        }
+    }
+    finally {
+        Set-ChatTitleVisibility -Enabled $originalTitlePreference -SkipDisplayRefresh
+    }
+    Write-Output 'TitleVisibility=OnOff; Visible=True; Hidden=True; Restored=True'
     exit 0
 }
 
@@ -5390,7 +5435,7 @@ function Show-ControlCenterDialog {
     $chatTitlesCheck.Size = New-Object System.Drawing.Size(230, 26)
     $chatTitlesCheck.ForeColor = $uiText
     $chatTitlesCheck.AccessibleName = 'Show local chat titles'
-    $chatTitlesCheck.AccessibleDescription = 'Keep local Codex chat titles visible in this running dashboard, or replace them with timestamp labels.'
+    $chatTitlesCheck.AccessibleDescription = 'Turn local Codex chat titles on or off in this running dashboard; off replaces them with timestamp labels.'
     $reportingPanel.Controls.Add($chatTitlesCheck)
     [void](Add-ControlCenterLabel -Parent $reportingPanel -Text 'Report time zone' -X 332 -Y 75 -Width 112 -Height 24 -Size 9 -Color $uiText)
     $reportTimeZoneBox = New-Object System.Windows.Forms.ComboBox
@@ -5479,10 +5524,7 @@ function Show-ControlCenterDialog {
         Update-WindowsNotificationToggle
     })
     $chatTitlesCheck.Add_CheckedChanged({
-        $script:personalSettings.ShowChatTitles = [bool]$chatTitlesCheck.Checked
-        Save-PersonalSettingsState
-        Reload-Logs
-        Refresh-Display
+        Set-ChatTitleVisibility -Enabled ([bool]$chatTitlesCheck.Checked)
     })
     $reportTimeZoneBox.Add_SelectedIndexChanged({
         if ($null -eq $reportTimeZoneBox.SelectedItem) { return }
@@ -5616,6 +5658,10 @@ function Show-ControlCenterDialog {
     $tabs.SelectedIndex = [Math]::Min($InitialTabIndex, $tabs.TabPages.Count - 1)
 
     if ($ConstructionOnly) {
+        if ($chatTitlesCheck.AccessibleName -ne 'Show local chat titles' -or
+            $chatTitlesCheck.AccessibleDescription -notmatch 'on or off') {
+            throw 'The local chat-title visibility control is missing from Settings.'
+        }
         if (-not [string]::IsNullOrWhiteSpace($ScreenshotPath)) {
             $captureParent = Split-Path -Parent $ScreenshotPath
             if ($captureParent -and -not (Test-Path -LiteralPath $captureParent -PathType Container)) {
